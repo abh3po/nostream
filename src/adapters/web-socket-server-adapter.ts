@@ -91,13 +91,20 @@ export class WebSocketServerAdapter extends WebServerAdapter implements IWebSock
 
     logger('client %s connected: %o', remoteAddress, req.headers)
 
-    if (await isRateLimited(remoteAddress, currentSettings)) {
-      logger('client %s terminated: rate-limited', remoteAddress)
-      client.terminate()
-      return
-    }
-
+    // Attach the adapter (and its 'message' listener) synchronously BEFORE any
+    // await: clients that publish immediately on open (e.g. nak) can have
+    // their first EVENT arrive while the connection rate-limit check is
+    // in-flight, and it would be emitted with zero listeners and dropped
+    // silently. The check still runs; a limited client is terminated after
+    // attachment.
     this.webSocketsAdapters.set(client, this.createWebSocketAdapter([client, req, this]))
+
+    isRateLimited(remoteAddress, currentSettings).then((limited) => {
+      if (limited) {
+        logger('client %s terminated: rate-limited', remoteAddress)
+        client.terminate()
+      }
+    })
   }
 
   private onHeartbeat() {

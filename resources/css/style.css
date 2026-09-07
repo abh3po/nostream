@@ -237,3 +237,7 @@ footer a:hover { color: var(--emphasis); }
 footer .sep { margin: 0 0.6rem; opacity: 0.5; }
 
 .hidden { display: none !important; }
+/* bootstrap-compat helper used by the template's section classes */
+.d-none { display: none !important; }
+/* template section classes (bootstrap-compat): hide when empty-fee */
+.d-none { display: none !important; }

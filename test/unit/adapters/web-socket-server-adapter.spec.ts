@@ -272,10 +272,15 @@ describe('WebSocketServerAdapter', () => {
         socket: { remoteAddress: '127.0.0.1' },
       }
 
+      // The adapter is attached synchronously so an immediately-published
+      // EVENT is never dropped; the rate-limit decision then terminates the
+      // client asynchronously.
       await onConnection(mockClient, mockReq)
+      await Promise.resolve()
+      await Promise.resolve()
 
       expect(terminateStub).to.have.been.calledOnce
-      expect(createWebSocketAdapter).not.to.have.been.called
+      expect(createWebSocketAdapter).to.have.been.calledOnce
     })
   })
 })

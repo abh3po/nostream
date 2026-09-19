@@ -179,7 +179,16 @@ export class EventMessageHandler implements IMessageHandler {
       return `rejected: content is longer than ${limits.content.maxLength} bytes`
     }
 
+    // NIP-59 deliberately randomizes the `created_at` of gift wraps and seals
+    // into the past (up to two days) so the true send time is not leaked. The
+    // skew limits below are anti-spam heuristics for ordinary events and must
+    // not apply to those kinds, or every NIP-17 DM is rejected before its
+    // strategy runs.
+    const isNip59TimestampObfuscated =
+      event.kind === EventKinds.GIFT_WRAP || event.kind === EventKinds.SEAL
+
     if (
+      !isNip59TimestampObfuscated &&
       typeof limits.createdAt?.maxPositiveDelta !== 'undefined' &&
       limits.createdAt.maxPositiveDelta > 0 &&
       event.created_at > now + limits.createdAt.maxPositiveDelta
@@ -188,6 +197,7 @@ export class EventMessageHandler implements IMessageHandler {
     }
 
     if (
+      !isNip59TimestampObfuscated &&
       typeof limits.createdAt?.maxNegativeDelta !== 'undefined' &&
       limits.createdAt.maxNegativeDelta > 0 &&
       event.created_at < now - limits.createdAt.maxNegativeDelta

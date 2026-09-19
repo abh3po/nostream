@@ -724,7 +724,7 @@ describe('WebSocketAdapter', () => {
   })
 
   describe('NIP-42 authentication', () => {
-    it('sends AUTH challenge message on construction', () => {
+    it('does not send an AUTH challenge on construction', () => {
       const freshClient = {
         on: sandbox.stub().returnsThis(),
         send: sandbox.stub(),
@@ -743,11 +743,106 @@ describe('WebSocketAdapter', () => {
         settingsFactory,
       )
 
+      // A challenge on connect would make clients that auto-sign on AUTH
+      // prompt the signer for a relay that rarely needs auth.
+      expect(freshClient.send).to.not.have.been.called
+      freshAdapter.removeAllListeners()
+    })
+
+    it('sends a challenge immediately before an auth-required CLOSED', () => {
+      const freshClient = {
+        on: sandbox.stub().returnsThis(),
+        send: sandbox.stub(),
+        close: sandbox.stub(),
+        ping: sandbox.stub(),
+        pong: sandbox.stub(),
+        readyState: WebSocket.OPEN,
+        removeAllListeners: sandbox.stub(),
+      }
+      const freshAdapter = new WebSocketAdapter(
+        freshClient as any,
+        request,
+        webSocketServer as any,
+        createMessageHandler,
+        slidingWindowRateLimiter,
+        settingsFactory,
+      )
+
+      // The adapter forwards handler output through its Message event.
+      freshAdapter.emit(WebSocketAdapterEvent.Message, ['CLOSED', 'sub1', 'auth-required: nope'])
+
+      expect(freshClient.send).to.have.been.calledTwice
+      const challenge = JSON.parse(freshClient.send.firstCall.args[0])
+      const closed = JSON.parse(freshClient.send.secondCall.args[0])
+      expect(challenge[0]).to.equal('AUTH')
+      expect(challenge[1]).to.be.a('string')
+      expect(challenge[1].length).to.be.greaterThan(0)
+      // Challenge must precede the auth-required response.
+      expect(closed[0]).to.equal('CLOSED')
+      expect(closed[2]).to.match(/^auth-required:/)
+
+      // Sent at most once per socket.
+      freshAdapter.emit(WebSocketAdapterEvent.Message, ['CLOSED', 'sub2', 'auth-required: nope'])
+      expect(freshClient.send).to.have.been.calledThrice
+      const third = JSON.parse(freshClient.send.thirdCall.args[0])
+      expect(third[0]).to.equal('CLOSED')
+
+      freshAdapter.removeAllListeners()
+    })
+
+    it('does not send a challenge for a non-auth CLOSED', () => {
+      const freshClient = {
+        on: sandbox.stub().returnsThis(),
+        send: sandbox.stub(),
+        close: sandbox.stub(),
+        ping: sandbox.stub(),
+        pong: sandbox.stub(),
+        readyState: WebSocket.OPEN,
+        removeAllListeners: sandbox.stub(),
+      }
+      const freshAdapter = new WebSocketAdapter(
+        freshClient as any,
+        request,
+        webSocketServer as any,
+        createMessageHandler,
+        slidingWindowRateLimiter,
+        settingsFactory,
+      )
+
+      freshAdapter.emit(WebSocketAdapterEvent.Message, ['CLOSED', 'sub1', 'rate-limited: slow down'])
       expect(freshClient.send).to.have.been.calledOnce
       const sent = JSON.parse(freshClient.send.firstCall.args[0])
-      expect(sent[0]).to.equal('AUTH')
-      expect(sent[1]).to.be.a('string')
-      expect(sent[1].length).to.be.greaterThan(0)
+      expect(sent[0]).to.equal('CLOSED')
+      freshAdapter.removeAllListeners()
+    })
+
+    it('sends a challenge before an auth-required OK (EVENT write)', () => {
+      const freshClient = {
+        on: sandbox.stub().returnsThis(),
+        send: sandbox.stub(),
+        close: sandbox.stub(),
+        ping: sandbox.stub(),
+        pong: sandbox.stub(),
+        readyState: WebSocket.OPEN,
+        removeAllListeners: sandbox.stub(),
+      }
+      const freshAdapter = new WebSocketAdapter(
+        freshClient as any,
+        request,
+        webSocketServer as any,
+        createMessageHandler,
+        slidingWindowRateLimiter,
+        settingsFactory,
+      )
+
+      freshAdapter.emit(WebSocketAdapterEvent.Message, ['OK', 'eventid', false, 'auth-required: authenticate'])
+
+      expect(freshClient.send).to.have.been.calledTwice
+      const challenge = JSON.parse(freshClient.send.firstCall.args[0])
+      const ok = JSON.parse(freshClient.send.secondCall.args[0])
+      expect(challenge[0]).to.equal('AUTH')
+      expect(ok[0]).to.equal('OK')
+      expect(ok[3]).to.match(/^auth-required:/)
       freshAdapter.removeAllListeners()
     })
 

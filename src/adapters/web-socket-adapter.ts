@@ -7,7 +7,7 @@ import { ZodError } from 'zod'
 import { ContextMetadata, Factory } from '../@types/base'
 import { createAuthChallengeMessage, createNoticeMessage, createOutgoingEventMessage } from '../utils/messages'
 import { IAbortable, IMessageHandler } from '../@types/message-handlers'
-import { IncomingMessage, OutgoingMessage } from '../@types/messages'
+import { IncomingMessage, MessageType, OutgoingMessage } from '../@types/messages'
 import { IWebSocketAdapter, IWebSocketServerAdapter } from '../@types/adapters'
 import { SubscriptionFilter, SubscriptionId } from '../@types/subscription'
 import { WebSocketAdapterEvent, WebSocketServerAdapterEvent } from '../constants/adapter'
@@ -36,6 +36,8 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
   private alive: boolean
   private subscriptions: Map<SubscriptionId, SubscriptionFilter[]>
   private readonly session: Nip42SessionManager
+  /** True once the NIP-42 challenge has been sent on this socket. */
+  private authChallengeSent: boolean
 
   public constructor(
     private readonly client: WebSocket,
@@ -47,6 +49,7 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
   ) {
     super()
     this.alive = true
+    this.authChallengeSent = false
     this.subscriptions = new Map()
 
     this.clientId = Buffer.from(this.request.headers['sec-websocket-key'] as string, 'base64').toString('hex')
@@ -85,9 +88,13 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
     logger('client %s connected from %s', this.clientId, this.clientAddress.address)
     recordWebsocketConnectionOpened()
 
-    // NIP-42: challenge-response session for this socket
+    // NIP-42: challenge-response session for this socket. The challenge is not
+    // sent here. Clients that auto-sign on seeing an AUTH message would produce
+    // a flurry of signer prompts for a relay that rarely needs auth, so the
+    // challenge is sent lazily, immediately before the first `auth-required`
+    // response (see sendMessage). NIP-42 explicitly permits this: the client
+    // only needs a stored challenge by the time it acts on `auth-required`.
     this.session = new Nip42SessionManager(() => this.settings().nip42?.sessionExpirySeconds)
-    this.sendMessage(createAuthChallengeMessage(this.session.getChallenge()))
   }
 
   public getClientId(): string {
@@ -137,6 +144,17 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
     if (this.client.readyState !== WebSocket.OPEN) {
       return
     }
+
+    // NIP-42: whenever we are about to tell a client that auth is required,
+    // ensure it has a challenge to sign. The challenge is sent just before the
+    // `auth-required` CLOSED/OK so clients that auto-sign on AUTH never see one
+    // unless they actually hit a restricted action. Send at most once per
+    // socket; the challenge is valid for the connection's lifetime.
+    if (!this.authChallengeSent && isAuthRequiredResponse(message)) {
+      this.authChallengeSent = true
+      this.client.send(JSON.stringify(createAuthChallengeMessage(this.session.getChallenge())))
+    }
+
     this.client.send(JSON.stringify(message))
   }
 
@@ -287,4 +305,20 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
     this.removeAllListeners()
     this.client.removeAllListeners()
   }
+}
+
+/**
+ * True when an outgoing message tells the client that NIP-42 auth is required,
+ * i.e. a CLOSED/OK carrying the machine-readable `auth-required:` prefix
+ * (NIP-42). Such a response must be preceded by an AUTH challenge so the client
+ * can act on it.
+ */
+const isAuthRequiredResponse = (message: OutgoingMessage): boolean => {
+  // CLOSED is [type, subscriptionId, reason]; OK is [type, eventId, ok, reason].
+  const type = message[0]
+  if (type !== MessageType.CLOSED && type !== MessageType.OK) {
+    return false
+  }
+  const reason = type === MessageType.CLOSED ? message[2] : message[3]
+  return typeof reason === 'string' && reason.startsWith('auth-required:')
 }

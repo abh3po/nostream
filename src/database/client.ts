@@ -74,7 +74,18 @@ const getReadReplicaConfigByIndex = (index: number): Knex.Config =>
   }) as any
 
 const getReadReplicaConfig = (): Knex.Config => {
-  const readReplicaIndex = Number(process.env.WORKER_INDEX) % Number(process.env.READ_REPLICAS)
+  // Workers other than the pool-based `worker` type (maintenance, dvm,
+  // mirroring) are forked without WORKER_INDEX. `Number(undefined) % n` is
+  // NaN, which selected an undefined RRNaN_DB_* config and crashed those
+  // workers on connect (they only survived because READ_REPLICA_ENABLED
+  // defaulted to false). Fall back to index 0 when WORKER_INDEX is unset.
+  const rawIndex = process.env.WORKER_INDEX
+  const replicaCount = Number(process.env.READ_REPLICAS)
+  const readReplicaIndex =
+    rawIndex === undefined || !Number.isFinite(replicaCount) || replicaCount <= 0
+      ? 0
+      : Number(rawIndex) % replicaCount
+
   return getReadReplicaConfigByIndex(readReplicaIndex)
 }
 

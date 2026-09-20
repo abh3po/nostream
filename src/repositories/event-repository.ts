@@ -441,7 +441,11 @@ export class EventRepository implements IEventRepository {
   }
 
   public async hasActiveRequestToVanish(pubkey: string): Promise<boolean> {
-    const result = await this.readReplicaDbClient('events')
+    // The master pool, not the read replica: this runs on the publish path
+    // (EventMessageHandler.isBlockedByRequestToVanish), so it must not queue
+    // behind client REQ streams. A read pool saturated by subscriptions would
+    // otherwise block every write with a KnexTimeoutError.
+    const result = await this.masterDbClient('events')
       .select('event_id')
       .where('event_pubkey', toBuffer(pubkey))
       .where('event_kind', EventKinds.REQUEST_TO_VANISH)

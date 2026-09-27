@@ -33,7 +33,9 @@ services:
       DB_NAME: ${DB_NAME:-nostr_ts_relay}
       DB_MIN_POOL_SIZE: ${DB_MIN_POOL_SIZE:-0}
       DB_MAX_POOL_SIZE: ${DB_MAX_POOL_SIZE:-8}
-      DB_ACQUIRE_CONNECTION_TIMEOUT: ${DB_ACQUIRE_CONNECTION_TIMEOUT:-60000}
+      # Same reasoning as the read pool: a publish must not hang for a
+      # minute behind a busy worker.
+      DB_ACQUIRE_CONNECTION_TIMEOUT: ${DB_ACQUIRE_CONNECTION_TIMEOUT:-3000}
       # Split reads and writes into separate pools. nostream's REQ streaming
       # (findByFilters) uses the read-replica client and holds a pooled
       # connection for the subscription's lifetime; with READ_REPLICA_ENABLED
@@ -50,7 +52,11 @@ services:
       RR0_DB_NAME: ${DB_NAME:-nostr_ts_relay}
       RR0_DB_MIN_POOL_SIZE: ${RR0_DB_MIN_POOL_SIZE:-0}
       RR0_DB_MAX_POOL_SIZE: ${RR0_DB_MAX_POOL_SIZE:-24}
-      RR0_DB_ACQUIRE_CONNECTION_TIMEOUT: ${RR0_DB_ACQUIRE_CONNECTION_TIMEOUT:-60000}
+      # Fail fast instead of queueing: at 60s a saturated pool grows a
+      # 26k-deep backlog of reads all waiting a full minute, which is what
+      # takes the relay down for minutes. Measured read p99 is ~3.7s, so 3s
+      # is above the normal path but refuses to join a runaway queue.
+      RR0_DB_ACQUIRE_CONNECTION_TIMEOUT: ${RR0_DB_ACQUIRE_CONNECTION_TIMEOUT:-3000}
       REDIS_HOST: nostream-cache
       REDIS_PORT: "6379"
       REDIS_USER: ${REDIS_USER:-default}

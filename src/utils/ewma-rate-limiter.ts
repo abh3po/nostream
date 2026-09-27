@@ -89,11 +89,16 @@ export class EWMARateLimiter implements IRateLimiter {
     }
 
     const lambda = Math.log(2) / period
+    // A refusal always implies a wait, but the smoothed rate can land exactly
+    // at the limit (the refused step is what would push it over), which makes
+    // ln(R/rate) zero. Falling back to the period would over-report; a short
+    // floor is honest and still stops a client retrying immediately.
+    const MIN_WAIT_MS = 1000
     const waitMs = projectedRate > rate && lambda > 0
-      ? Math.ceil(Math.log(projectedRate / rate) / lambda)
-      : 0
+      ? Math.max(MIN_WAIT_MS, Math.ceil(Math.log(projectedRate / rate) / lambda))
+      : MIN_WAIT_MS
 
-    return { limited: true, retryAfterMs: Math.max(0, waitMs) }
+    return { limited: true, retryAfterMs: waitMs }
   }
 
 }

@@ -82,6 +82,15 @@ describe('EWMARateLimiter', () => {
         expect(result.retryAfterMs).to.be.closeTo(240000, 2)
         })
 
+        it('always reports a wait when refused, even at the limit', async () => {
+        // projectedRate == rate: the refused *step* is what would push it over,
+        // so the decay formula yields 0. A client must still be told to wait.
+        evalStub.resolves([0, '10'])
+        const result = await rateLimiter.check('key', 1, { period: 120000, rate: 10 })
+        expect(result.limited).to.be.true
+        expect(result.retryAfterMs).to.be.greaterThan(0)
+        })
+
         it('check reports no wait when allowed', async () => {
         evalStub.resolves([1, '1'])
         const result = await rateLimiter.check('key', 1, { period: 120000, rate: 10 })

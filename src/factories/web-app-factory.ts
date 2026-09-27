@@ -23,7 +23,13 @@ export const createWebApp = (): Express => {
       webRelayUrl.protocol = getWebProtocolForRelay(relayUrl.protocol)
 
       const directives = {
-        'img-src': ["'self'", 'data:', 'https://cdn.zebedee.io/an/nostr/'],
+        // Profile pictures live on arbitrary hosts: measured across this
+        // relay's kind-0 events, images span 27 domains (image.nostr.build,
+        // blossom.primal.net, pbs.twimg.com, per-user *.blossom.band, ...).
+        // There is no enumerable allowlist and these are cosmetic assets, so
+        // https: is allowed. connect-src below stays limited to this relay, so
+        // the metadata fetch itself is still pinned here.
+        'img-src': ["'self'", 'data:', 'https:', 'https://cdn.zebedee.io/an/nostr/'],
         'connect-src': ["'self'", settings.info.relay_url as string, webRelayUrl.toString()],
         'default-src': ["'self'"],
         'frame-src': ["'self'", getGrafanaFrameOrigin()],

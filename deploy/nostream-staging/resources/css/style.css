@@ -337,3 +337,39 @@ footer .sep { margin: 0 0.6rem; opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) {
   .monitor-dot { transition: none; }
 }
+
+.monitor-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+/* The library renders into shadow DOM; its named parts are the only seam. */
+.monitor-author nostr-picture { flex: 0 0 auto; line-height: 0; }
+.monitor-author nostr-picture::part(img) {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--gray-300);
+}
+.monitor-author nostr-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-light);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12rem;
+}
+/* The note body comes from <nostr-text>, which owns its own layout. */
+.monitor-note nostr-text {
+  display: block;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  .monitor-author nostr-picture::part(img) { background: #2a2a2c; }
+}

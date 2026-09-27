@@ -6,6 +6,116 @@
     <meta name="theme-color" content="#f4f4f3">
     <title>{{name}}</title>
     <link rel="stylesheet" href="{{path_prefix}}/css/style.css">
+    <!--
+      Pin the nostr web components library to THIS relay.
+
+      The library ships with 7 hard-coded indexer relays and resolves profiles
+      through them. Its bundle reads window.nostrShared* once, when the module
+      loads, and only falls back to those indexers when they are unset — so this
+      must run first, and must install:
+        - nostrSharedMetadataLoader: kind-0 metadata, from our relay only
+        - nostrSharedRelayListLoader: returns nothing, so the library never
+          reaches out to an author's own relays
+      Result: every profile shown below was fetched through this relay.
+    -->
+    <script nonce="{{nonce}}">
+      /* relay-profile-loader */
+      (function () {
+        var RELAY = document.currentScript
+          ? 'wss://' + location.host
+          : 'wss://' + location.host;
+        // Same relay the monitor uses; keep them in lockstep.
+        window.__relayMonitorRelay = RELAY;
+
+        var cache = new Map();
+
+        // Minimal single-shot REQ against our relay. Kept dependency-free so
+        // the override cannot itself pull in another relay library.
+        function fetchKind0(pubkey) {
+          if (cache.has(pubkey)) return cache.get(pubkey);
+          var p = new Promise(function (resolve) {
+            var ws, done = false;
+            var finish = function (v) { if (done) return; done = true; try { ws.close(); } catch (e) {} resolve(v); };
+            try { ws = new WebSocket(RELAY); } catch (e) { return finish(null); }
+            var timer = setTimeout(function () { finish(null); }, 8000);
+            ws.onopen = function () {
+              ws.send(JSON.stringify(['REQ', 'profile-' + pubkey.slice(0, 12), { kinds: [0], authors: [pubkey], limit: 1 }]));
+            };
+            ws.onmessage = function (ev) {
+              var msg;
+              try { msg = JSON.parse(ev.data); } catch (e) { return; }
+              if (!Array.isArray(msg)) return;
+              if (msg[0] === 'EVENT' && msg[2]) {
+                clearTimeout(timer);
+                var meta = {};
+                try { meta = JSON.parse(msg[2].content) || {}; } catch (e) {}
+                finish(meta);
+                return;
+              }
+              if (msg[0] === 'EOSE' || msg[0] === 'CLOSED') { clearTimeout(timer); finish(null); }
+            };
+            ws.onerror = function () { clearTimeout(timer); finish(null); };
+          });
+          cache.set(pubkey, p);
+          return p;
+        }
+
+        // Deterministic placeholder avatar: a solid circle with the author's
+        // initial. Colour comes from the pubkey so it never changes between
+        // page loads. Encoded as an SVG data: URI (no network request).
+        function placeholderAvatar(pubkey, label) {
+          var hue = 0;
+          for (var i = 0; i < pubkey.length; i++) {
+            hue = (hue * 31 + pubkey.charCodeAt(i)) % 360;
+          }
+          var initial = (label || '?').trim().charAt(0).toUpperCase() || '?';
+          var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">'
+            + '<circle cx="22" cy="22" r="22" fill="hsl(' + hue + ',45%,55%)"/>'
+            + '<text x="22" y="29" font-family="Inter,system-ui,sans-serif" font-size="20"'
+            + ' font-weight="600" fill="#fff" text-anchor="middle">' + initial + '</text>'
+            + '</svg>';
+          return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+
+        // The library calls this with { pubkey, relays } and expects an object
+        // carrying name/shortName/image/nip05/about. Values come from kind-0
+        // content on our relay; nothing is queried from any other relay.
+        window.nostrSharedMetadataLoader = async function (req) {
+          var pubkey = req && req.pubkey;
+          var meta = pubkey ? await fetchKind0(pubkey) : null;
+          var npub = '';
+          try { npub = pubkey ? String(pubkey) : ''; } catch (e) {}
+          var name = meta ? (meta.display_name || meta.name || undefined) : undefined;
+          var short = name || (meta && meta.nip05) || (pubkey.slice(0, 9) + '…' + pubkey.slice(-4));
+          var picture = (meta && (meta.picture || meta.image)) || '';
+
+          // Authors with no kind-0 get a generated avatar rather than the
+          // library's transparent pixel, so the feed reads as intentional.
+          // Colour is derived from the pubkey (stable across loads) and the
+          // image is a data: URI, so it costs no extra request.
+          if (!picture) picture = placeholderAvatar(pubkey, name || short);
+
+          return {
+            pubkey: pubkey,
+            name: name,
+            displayName: name,
+            shortName: short,
+            image: picture,
+            picture: picture,
+            nip05: meta && meta.nip05 ? meta.nip05 : undefined,
+            about: meta && meta.about ? meta.about : undefined,
+            banner: meta && meta.banner ? meta.banner : undefined
+          };
+        };
+
+        // Pinned: never resolve an author's NIP-65 list, so the library has no
+        // route to any relay but ours.
+        window.nostrSharedRelayListLoader = async function () {
+          return { items: [] };
+        };
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/nostr-web-components@0.2.4/dist/index.js"></script>
   </head>
   <body lang="en">
     <main>
@@ -190,9 +300,14 @@
           }
           list.innerHTML = notes.map(function (n) {
             return '<article class="monitor-note">'
-              + '<header><code>' + esc(shortId(n.pubkey)) + '</code>'
-              + '<time>' + esc(ago(n.created_at)) + '</time></header>'
-              + '<p>' + esc(n.content || '') + '</p>'
+              + '<header>'
+              + '<span class="monitor-author">'
+              + '<nostr-picture pubkey="' + esc(n.pubkey) + '" width="22" height="22"></nostr-picture>'
+              + '<nostr-name pubkey="' + esc(n.pubkey) + '"></nostr-name>'
+              + '</span>'
+              + '<time>' + esc(ago(n.created_at)) + '</time>'
+              + '</header>'
+              + '<nostr-text content="' + esc(n.content || '') + '"></nostr-text>'
               + '</article>';
           }).join('');
         }

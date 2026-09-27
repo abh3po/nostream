@@ -241,3 +241,99 @@ footer .sep { margin: 0 0.6rem; opacity: 0.5; }
 .d-none { display: none !important; }
 /* template section classes (bootstrap-compat): hide when empty-fee */
 .d-none { display: none !important; }
+
+
+/* ── relay round-trip monitor ─────────────────────── */
+/* Live kind-1 feed. The timing is a real WebSocket round trip to this relay
+   (edge -> nginx -> relay -> gateway -> mesh), so a green reading means the
+   read path itself works, not just that something answered. */
+.monitor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.55rem;
+}
+.monitor-head h5 { margin: 0; }
+
+.monitor-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.monitor-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--gray-400);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+/* Reachable: same green treatment as the page's .status dot. */
+.monitor-status-ok .monitor-dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15);
+}
+.monitor-status-bad .monitor-dot {
+  background: var(--emphasis);
+  box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.15);
+}
+
+.monitor-meta {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--gray-500);
+  margin: 0 0 0.95rem;
+}
+.monitor-meta strong { color: var(--ink); font-weight: 600; }
+.monitor-sep { margin: 0 0.45rem; opacity: 0.5; }
+.monitor-bad { color: var(--emphasis); }
+
+.monitor-notes { display: flex; flex-direction: column; gap: 0.55rem; }
+
+.monitor-note {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--paper);
+  padding: 0.65rem 0.8rem;
+}
+.monitor-note header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+.monitor-note header code {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-light);
+}
+.monitor-note header time {
+  font-size: 0.72rem;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.monitor-note p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 7.5em;
+  overflow: hidden;
+}
+.monitor-empty {
+  font-size: 0.9rem;
+  color: var(--gray-500);
+  margin: 0;
+}
+/* Respect reduced-motion: the dot is a status cue, not an animation, but the
+   transition is dropped for users who ask for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .monitor-dot { transition: none; }
+}

@@ -78,6 +78,18 @@
         </p>
       </div>
 
+      <div class="card" id="relay-monitor">
+        <div class="monitor-head">
+          <h5>Live from this relay</h5>
+          <div class="monitor-status" id="monitor-status">
+            <span class="monitor-dot"></span>
+            <span id="monitor-status-text">connecting…</span>
+          </div>
+        </div>
+        <p class="monitor-meta" id="monitor-meta">Fetching the latest notes…</p>
+        <div class="monitor-notes" id="monitor-notes"></div>
+      </div>
+
       <div class="status">
         <span class="dot"></span>
         Relay is up — be kind, post good stuff
@@ -118,6 +130,131 @@
             document.body.removeChild(ta);
           }
         });
+      })();
+
+      // ── relay round-trip monitor ───────────────────────────────────────
+      // Opens a real WebSocket to this relay and measures how long the latest
+      // kind-1 notes take to arrive, so the page reflects the same path a
+      // Nostr client takes (edge -> nginx -> relay -> gateway -> mesh).
+      // A health endpoint could stay green while reads time out behind it;
+      // this cannot.
+      (function () {
+        var meta = document.getElementById('monitor-meta');
+        var list = document.getElementById('monitor-notes');
+        var statusText = document.getElementById('monitor-status-text');
+        var statusBox = document.getElementById('monitor-status');
+        if (!meta || !list || !window.WebSocket) return;
+
+        var RELAY = document.getElementById('relay-address').textContent.trim();
+        var POLL_MS = 30000;
+        var TIMEOUT_MS = 15000;
+
+        var state = { socket: null, timer: null, started: 0, best: null, notes: [] };
+
+        function esc(s) {
+          return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+        function shortId(pk) {
+          if (!pk || pk.length < 12) return pk || '';
+          return pk.slice(0, 8) + '…' + pk.slice(-4);
+        }
+        function ago(sec) {
+          var d = Math.floor(Date.now() / 1000) - sec;
+          if (d < 60) return d + 's ago';
+          if (d < 3600) return Math.floor(d / 60) + 'm ago';
+          if (d < 86400) return Math.floor(d / 3600) + 'h ago';
+          return Math.floor(d / 86400) + 'd ago';
+        }
+        function now() {
+          return (window.performance && performance.now) ? performance.now() : Date.now();
+        }
+        function setStatus(kind, text) {
+          if (statusBox) statusBox.className = 'monitor-status monitor-status-' + kind;
+          if (statusText) statusText.textContent = text;
+        }
+
+        function showOk(ms, notes) {
+          setStatus('ok', 'reachable');
+          var bits = ['<strong>' + ms + ' ms</strong> round trip'];
+          bits.push(notes.length === 0
+            ? 'no notes yet'
+            : notes.length + (notes.length === 1 ? ' note' : ' notes'));
+          if (state.best != null) bits.push('best ' + state.best + ' ms');
+          meta.innerHTML = bits.join('<span class="monitor-sep">·</span>');
+
+          if (!notes.length) {
+            list.innerHTML = '<p class="monitor-empty">Nothing here yet — be the first to post.</p>';
+            return;
+          }
+          list.innerHTML = notes.map(function (n) {
+            return '<article class="monitor-note">'
+              + '<header><code>' + esc(shortId(n.pubkey)) + '</code>'
+              + '<time>' + esc(ago(n.created_at)) + '</time></header>'
+              + '<p>' + esc(n.content || '') + '</p>'
+              + '</article>';
+          }).join('');
+        }
+
+        function showFail(reason) {
+          setStatus('bad', 'unreachable');
+          meta.innerHTML = '<span class="monitor-bad">' + esc(reason) + '</span>'
+            + (state.best != null ? '<span class="monitor-sep">·</span>last best ' + state.best + ' ms' : '');
+        }
+
+        function poll() {
+          if (state.socket) { try { state.socket.close(); } catch (e) {} }
+          state.started = now();
+          state.notes = [];
+
+          var ws;
+          try { ws = new WebSocket(RELAY); } catch (e) { showFail('cannot open a socket'); return; }
+          state.socket = ws;
+
+          state.timer = setTimeout(function () {
+            try { ws.close(); } catch (e) {}
+            showFail('timed out after ' + Math.round(TIMEOUT_MS / 1000) + 's');
+          }, TIMEOUT_MS);
+
+          ws.onopen = function () {
+            ws.send(JSON.stringify(['REQ', 'landing-monitor', { kinds: [1], limit: 5 }]));
+          };
+
+          // Browsers deliver a MessageEvent whose .data is the frame payload.
+          ws.onmessage = function (event) {
+            var msg;
+            try { msg = JSON.parse(event.data); } catch (e) { return; }
+            if (!Array.isArray(msg)) return;
+
+            if (msg[0] === 'EVENT' && msg[2]) { state.notes.push(msg[2]); return; }
+
+            if (msg[0] === 'EOSE') {
+              clearTimeout(state.timer);
+              var ms = Math.round(now() - state.started);
+              if (state.best == null || ms < state.best) state.best = ms;
+              showOk(ms, state.notes);
+              try { ws.close(); } catch (e) {}
+              return;
+            }
+            if (msg[0] === 'NOTICE' || msg[0] === 'CLOSED') {
+              clearTimeout(state.timer);
+              try { ws.close(); } catch (e) {}
+              showFail(String(msg[1] || 'relay declined the request'));
+            }
+          };
+
+          ws.onerror = function () {
+            clearTimeout(state.timer);
+            showFail('could not reach the relay');
+          };
+        }
+
+        poll();
+        // Re-poll while the tab is visible; a hidden tab imposes no load.
+        setInterval(function () {
+          if (document.visibilityState === 'visible') poll();
+        }, POLL_MS);
       })();
     </script>
   </body>

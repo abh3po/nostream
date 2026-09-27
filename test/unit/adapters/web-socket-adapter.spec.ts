@@ -511,9 +511,12 @@ describe('WebSocketAdapter', () => {
       expect(client.send).to.have.been.called
     })
 
-    it('stops hitting subsequent rate limit windows once one is exceeded', async () => {
+    it('checks every rate limit window to report the longest wait', async () => {
       client.readyState = WebSocket.OPEN
 
+      // Two windows both exceeded. The adapter must evaluate both, because the
+      // client should be told the longest wait (the stricter limit) rather than
+      // whichever happened to be checked first.
       const hitStub = sandbox.stub().resolves(true)
 
       settingsFactory.returns({
@@ -536,7 +539,7 @@ describe('WebSocketAdapter', () => {
 
       await onMessage(Buffer.from(JSON.stringify(['EVENT', {}])))
 
-      expect(hitStub).to.have.been.calledOnce
+      expect(hitStub).to.have.been.calledTwice
     })
 
     it('does not rate limit when no rateLimits are configured', async () => {
@@ -583,6 +586,147 @@ describe('WebSocketAdapter', () => {
       expect(client.send).to.have.been.calledOnce
       const sent = JSON.parse(client.send.firstCall.args[0])
       expect(sent[1]).not.to.include('rate limited')
+    })
+
+    it('answers a rate-limited EVENT with a NIP-20 OK of false', async () => {
+      client.readyState = WebSocket.OPEN
+
+      settingsFactory.returns({
+        network: { remoteIpHeader: '' },
+        limits: {
+          message: {
+            rateLimits: [{ period: 60000, rate: 1 }],
+            ipWhitelist: [],
+          },
+        },
+      })
+
+      // `check` is the reporting form; it carries the retry hint.
+      slidingWindowRateLimiter.returns({
+        hit: sandbox.stub().resolves(true),
+        check: sandbox.stub().resolves({ limited: true, retryAfterMs: 42000 }),
+      })
+
+      const messageCall = client.on.getCalls().find((call: any) => call.args[0] === 'message')
+      const onMessage = messageCall.args[1]
+
+      const eventId = 'a'.repeat(64)
+      await onMessage(Buffer.from(JSON.stringify(['EVENT', { id: eventId }])))
+
+      const sent = JSON.parse(client.send.firstCall.args[0])
+      expect(sent[0]).to.equal('OK')
+      expect(sent[1]).to.equal(eventId)
+      expect(sent[2]).to.equal(false)
+      expect(sent[3]).to.include('rate-limited')
+    })
+
+    it('reports the wait in whole seconds, rounded up', async () => {
+      client.readyState = WebSocket.OPEN
+
+      settingsFactory.returns({
+        network: { remoteIpHeader: '' },
+        limits: {
+          message: {
+            rateLimits: [{ period: 60000, rate: 1 }],
+            ipWhitelist: [],
+          },
+        },
+      })
+
+      slidingWindowRateLimiter.returns({
+        hit: sandbox.stub().resolves(true),
+        check: sandbox.stub().resolves({ limited: true, retryAfterMs: 1500 }),
+      })
+
+      const onMessage = client.on.getCalls().find((call: any) => call.args[0] === 'message').args[1]
+      await onMessage(Buffer.from(JSON.stringify(['EVENT', { id: 'b'.repeat(64) }])))
+
+      const sent = JSON.parse(client.send.firstCall.args[0])
+      // 1500ms rounds up to 2s: a client that waits 1s would be refused again.
+      expect(sent[3]).to.include('retry in 2s')
+    })
+
+    it('reports the longest wait across all exceeded windows', async () => {
+      client.readyState = WebSocket.OPEN
+
+      settingsFactory.returns({
+        network: { remoteIpHeader: '' },
+        limits: {
+          message: {
+            rateLimits: [
+              { period: 60000, rate: 1 },
+              { period: 3600000, rate: 10 },
+            ],
+            ipWhitelist: [],
+          },
+        },
+      })
+
+      const checkStub = sandbox.stub()
+      checkStub.onFirstCall().resolves({ limited: true, retryAfterMs: 2000 })
+      checkStub.onSecondCall().resolves({ limited: true, retryAfterMs: 900000 })
+      slidingWindowRateLimiter.returns({ hit: sandbox.stub().resolves(true), check: checkStub })
+
+      const onMessage = client.on.getCalls().find((call: any) => call.args[0] === 'message').args[1]
+      await onMessage(Buffer.from(JSON.stringify(['EVENT', { id: 'c'.repeat(64) }])))
+
+      const sent = JSON.parse(client.send.firstCall.args[0])
+      expect(sent[3]).to.include('retry in 900s')
+    })
+
+    it('sends a NOTICE for a rate-limited non-EVENT message', async () => {
+      client.readyState = WebSocket.OPEN
+
+      settingsFactory.returns({
+        network: { remoteIpHeader: '' },
+        limits: {
+          message: {
+            rateLimits: [{ period: 60000, rate: 1 }],
+            ipWhitelist: [],
+          },
+        },
+      })
+
+      slidingWindowRateLimiter.returns({
+        hit: sandbox.stub().resolves(true),
+        check: sandbox.stub().resolves({ limited: true, retryAfterMs: 5000 }),
+      })
+
+      const onMessage = client.on.getCalls().find((call: any) => call.args[0] === 'message').args[1]
+      // A REQ has no NIP-20 reply to hook into, so it gets a NOTICE.
+      await onMessage(Buffer.from(JSON.stringify(['REQ', 'sub', { kinds: [1] }])))
+
+      const sent = JSON.parse(client.send.firstCall.args[0])
+      expect(sent[0]).to.equal('NOTICE')
+      expect(sent[1]).to.include('rate-limited')
+    })
+
+    it('falls back to hit() for a limiter without check()', async () => {
+      client.readyState = WebSocket.OPEN
+
+      settingsFactory.returns({
+        network: { remoteIpHeader: '' },
+        limits: {
+          message: {
+            rateLimits: [{ period: 60000, rate: 1 }],
+            ipWhitelist: [],
+          },
+        },
+      })
+
+      // A custom limiter exposing only the original boolean API.
+      const hitStub = sandbox.stub().resolves(true)
+      slidingWindowRateLimiter.returns({ hit: hitStub })
+
+      const onMessage = client.on.getCalls().find((call: any) => call.args[0] === 'message').args[1]
+      await onMessage(Buffer.from(JSON.stringify(['EVENT', { id: 'd'.repeat(64) }])))
+
+      expect(hitStub).to.have.been.called
+      const sent = JSON.parse(client.send.firstCall.args[0])
+      expect(sent[0]).to.equal('OK')
+      expect(sent[2]).to.equal(false)
+      // Without a retry hint the message still reads as a rate limit.
+      expect(sent[3]).to.include('rate-limited')
     })
 
     it('sets alive to true when message is received', async () => {

@@ -52,8 +52,10 @@ describe('SlidingWindowRateLimiter', () => {
     sandbox.restore()
   })
 
+  // The Lua script returns the remaining wait in ms (0 = allowed); the old
+  // 1/0 contract is gone, so these assert against the new shape.
   it('returns true if rate limited', async () => {
-    evalStub.resolves(1)
+    evalStub.resolves(42000)
 
     const actualResult = await rateLimiter.hit('key', 1, { period: 60000, rate: 10 })
 
@@ -75,10 +77,36 @@ describe('SlidingWindowRateLimiter', () => {
   })
 
   it('robustly handles string return types from Redis', async () => {
-    evalStub.resolves('1')
+    evalStub.resolves('42000')
 
     const actualResult = await rateLimiter.hit('key', 1, { period: 60000, rate: 10 })
 
     expect(actualResult).to.be.true
+  })
+
+  it('check reports the remaining wait when limited', async () => {
+    evalStub.resolves(42000)
+
+    const result = await rateLimiter.check('key', 1, { period: 60000, rate: 10 })
+
+    expect(result.limited).to.be.true
+    expect(result.retryAfterMs).to.equal(42000)
+  })
+
+  it('check reports no wait when allowed', async () => {
+    evalStub.resolves(0)
+
+    const result = await rateLimiter.check('key', 1, { period: 60000, rate: 10 })
+
+    expect(result.limited).to.be.false
+    expect(result.retryAfterMs).to.equal(undefined)
+  })
+
+  it('check treats a non-numeric reply as allowed', async () => {
+    evalStub.resolves(null)
+
+    const result = await rateLimiter.check('key', 1, { period: 60000, rate: 10 })
+
+    expect(result.limited).to.be.false
   })
 })

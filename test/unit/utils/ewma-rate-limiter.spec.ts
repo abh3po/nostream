@@ -58,15 +58,42 @@ describe('EWMARateLimiter', () => {
 
     describe('hit', () => {
         it('returns false on first request', async () => {
-        evalStub.resolves(0)
+        // The script now returns {allowed, projectedRate}: [1, rate] = allowed.
+        evalStub.resolves([1, '1.5'])
         const result = await rateLimiter.hit('key', 1, { period: 120000, rate: 10 })
         expect(result).to.be.false
         })
 
         it('returns true when rate limit exceeded', async () => {
-        evalStub.resolves(1)
+        // [0, rate] = refused, projectedRate above the limit.
+        evalStub.resolves([0, '42'])
         const result = await rateLimiter.hit('key', 1, { period: 120000, rate: 10 })
         expect(result).to.be.true
+        })
+
+        it('check reports a decay-based wait when refused', async () => {
+        evalStub.resolves([0, '40'])
+        const result = await rateLimiter.check('key', 1, { period: 120000, rate: 10 })
+        expect(result.limited).to.be.true
+        // R(t) = R0 * e^(-lambda t) reaches `rate` after ln(R0/rate)/lambda,
+        // with lambda = ln(2)/period. For R0=40, rate=10, period=120000 that
+        // is ln(4)/ln(2) * 120000 = 240000ms. The implementation ceils to a
+        // whole ms so a client never retries a hair too early.
+        expect(result.retryAfterMs).to.be.closeTo(240000, 2)
+        })
+
+        it('check reports no wait when allowed', async () => {
+        evalStub.resolves([1, '1'])
+        const result = await rateLimiter.check('key', 1, { period: 120000, rate: 10 })
+        expect(result.limited).to.be.false
+        expect(result.retryAfterMs).to.equal(undefined)
+        })
+
+        it('tolerates a scalar reply from an older cache', async () => {
+        // Defensive: if the script is still the old 1/0 form, a 1 means allowed.
+        evalStub.resolves(1)
+        const result = await rateLimiter.check('key', 1, { period: 120000, rate: 10 })
+        expect(result.limited).to.be.false
         })
     })
 })

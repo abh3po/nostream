@@ -318,8 +318,37 @@
             + (state.best != null ? '<span class="monitor-sep">·</span>last best ' + state.best + ' ms' : '');
         }
 
+        // Rate limited by our own relay: not an outage, so show a distinct
+        // state with a live countdown of how long the client must wait. The
+        // relay's message carries the wait ("retry in Ns"); we tick it down so
+        // the page answers the question a viewer actually has -- how long.
+        function showRateLimited(seconds) {
+          setStatus('warn', 'rate limited');
+          if (state.tickTimer) { clearInterval(state.tickTimer); state.tickTimer = null; }
+          var remaining = seconds;
+          var paint = function () {
+            meta.innerHTML = '<span class="monitor-warn">Rate limited by this relay</span>'
+              + '<span class="monitor-sep">·</span>retry in <strong>' + remaining + 's</strong>'
+              + (state.best != null ? '<span class="monitor-sep">·</span>last best ' + state.best + ' ms' : '');
+          };
+          paint();
+          state.tickTimer = setInterval(function () {
+            remaining -= 1;
+            if (remaining <= 0) {
+              clearInterval(state.tickTimer);
+              state.tickTimer = null;
+              meta.innerHTML = '<span class="monitor-warn">Rate limit cleared</span>'
+                + '<span class="monitor-sep">·</span>waiting for the next check…';
+              return;
+            }
+            paint();
+          }, 1000);
+        }
+
         function poll() {
           if (state.socket) { try { state.socket.close(); } catch (e) {} }
+          // A new attempt supersedes any rate-limit countdown from before.
+          if (state.tickTimer) { clearInterval(state.tickTimer); state.tickTimer = null; }
           state.started = now();
           state.notes = [];
 
@@ -355,7 +384,15 @@
             if (msg[0] === 'NOTICE' || msg[0] === 'CLOSED') {
               clearTimeout(state.timer);
               try { ws.close(); } catch (e) {}
-              showFail(String(msg[1] || 'relay declined the request'));
+              var reason = String(msg[1] || 'relay declined the request');
+              // The relay reports a wait for rate limits ("retry in 42s"), so
+              // show a live countdown rather than a static failure.
+              var m = /retry in (\d+)s/.exec(reason);
+              if (m) {
+                showRateLimited(parseInt(m[1], 10));
+              } else {
+                showFail(reason);
+              }
             }
           };
 

@@ -5,7 +5,7 @@ import { WebSocket } from 'ws'
 import { ZodError } from 'zod'
 
 import { ContextMetadata, Factory } from '../@types/base'
-import { createAuthChallengeMessage, createNoticeMessage, createOutgoingEventMessage } from '../utils/messages'
+import { createAuthChallengeMessage, createCommandResult, createNoticeMessage, createOutgoingEventMessage } from '../utils/messages'
 import { IAbortable, IMessageHandler } from '../@types/message-handlers'
 import { IncomingMessage, MessageType, OutgoingMessage } from '../@types/messages'
 import { IWebSocketAdapter, IWebSocketServerAdapter } from '../@types/adapters'
@@ -19,7 +19,7 @@ import { Event } from '../@types/event'
 import { getRemoteAddress } from '../utils/http'
 import { createReadAuthorizationGuard } from '../utils/nip42'
 import { Nip42SessionManager } from '../utils/nip42-session'
-import { IRateLimiter } from '../@types/utils'
+import { IRateLimiter, IRateLimitResult } from '../@types/utils'
 import { isEventMatchingFilter } from '../utils/event'
 import { messageSchema } from '../schemas/message-schema'
 import { Settings } from '../@types/settings'
@@ -27,6 +27,22 @@ import { SocketAddress } from 'net'
 
 const logger = createLogger('web-socket-adapter')
 const debugHeartbeat = logger.extend('heartbeat')
+
+/**
+ * Human-readable rate-limit reason, including how long to wait.
+ *
+ * The `rate-limited:` prefix mirrors the machine-readable `auth-required:`
+ * convention NIP-42 uses elsewhere in this file, so a client can match on it.
+ * The wait is rounded to whole seconds (never below 1) because that is the
+ * granularity a client can sensibly act on.
+ */
+const describeRateLimit = (retryAfterMs?: number): string => {
+  if (retryAfterMs === undefined || retryAfterMs <= 0) {
+    return 'rate-limited: too many messages, slow down'
+  }
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000))
+  return `rate-limited: too many messages, retry in ${seconds}s`
+}
 
 const abortableMessageHandlers: WeakMap<WebSocket, IAbortable[]> = new WeakMap()
 
@@ -194,8 +210,19 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
     let abortable = false
     let messageHandler: (IMessageHandler & IAbortable) | undefined = undefined
     try {
-      if (await this.isRateLimited(this.clientAddress.address)) {
-        this.sendMessage(createNoticeMessage('rate limited'))
+      const rateLimited = await this.getRateLimit(this.clientAddress.address)
+      if (rateLimited.limited) {
+        // A rate-limited EVENT must still get a NIP-20 OK. Clients wait for one
+        // before considering a publish sent, so replying with only a NOTICE
+        // leaves them hanging until their own timeout (measured: a real client
+        // waited indefinitely, never receiving OK). The OK carries accepted=false
+        // plus how long to wait, which a client can act on.
+        const rejected = this.replyRateLimitedEvent(raw, rateLimited.retryAfterMs)
+        if (!rejected) {
+          // Not an EVENT (REQ/CLOSE/COUNT...): a NOTICE is the right reply, and
+          // still reports the wait so the client can pace itself.
+          this.sendMessage(createNoticeMessage(describeRateLimit(rateLimited.retryAfterMs)))
+        }
         return
       }
 
@@ -250,28 +277,70 @@ export class WebSocketAdapter extends EventEmitter implements IWebSocketAdapter 
     }
   }
 
-  private async isRateLimited(client: string): Promise<boolean> {
+  /**
+   * Checks every configured message rate limit for this client.
+   *
+   * Returns the longest wait implied by any limit that was exceeded, so the
+   * client is told the worst case rather than whichever limit happened to be
+   * evaluated last.
+   */
+  private async getRateLimit(client: string): Promise<IRateLimitResult> {
     const { rateLimits, ipWhitelist = [] } = this.settings().limits?.message ?? {}
 
     if (!Array.isArray(rateLimits) || !rateLimits.length || ipWhitelist.includes(client)) {
-      return false
+      return { limited: false }
     }
 
     const rateLimiter = this.rateLimiter()
 
-    const hit = (period: number, rate: number) => rateLimiter.hit(`${client}:message:${period}`, 1, { period, rate })
+    let longestWait: number | undefined
 
     for (const { rate, period } of rateLimits) {
-      const isRateLimited = await hit(period, rate)
+      const key = `${client}:message:${period}`
+      // `check` reports the wait when the limiter implements it; the interface
+      // marks it optional so a custom limiter can stay on the boolean API.
+      const result = rateLimiter.check
+        ? await rateLimiter.check(key, 1, { period, rate })
+        : { limited: await rateLimiter.hit(key, 1, { period, rate }) }
 
-      if (isRateLimited) {
+      if (result.limited) {
         logger('rate limited %s: %d messages / %d ms exceeded', client, rate, period)
-
-        return true
+        const wait = result.retryAfterMs ?? period
+        longestWait = longestWait === undefined ? wait : Math.max(longestWait, wait)
       }
     }
 
-    return false
+    return longestWait === undefined
+      ? { limited: false }
+      : { limited: true, retryAfterMs: longestWait }
+  }
+
+  /**
+   * Answers a rate-limited EVENT with a NIP-20 OK of `false`.
+   *
+   * Returns whether the raw frame was an EVENT (and so was answered). Non-EVENT
+   * messages fall through to a NOTICE. Parsing is defensive: a malformed or
+   * unidentifiable frame returns false rather than throwing, because this runs
+   * on the rejection path where raising would lose the reply entirely.
+   */
+  private replyRateLimitedEvent(raw: Buffer, retryAfterMs?: number): boolean {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw.toString('utf8'))
+    } catch {
+      return false
+    }
+    if (!Array.isArray(parsed) || parsed[0] !== MessageType.EVENT) {
+      return false
+    }
+    const event = parsed[1] as { id?: unknown } | undefined
+    const eventId = typeof event?.id === 'string' ? event.id : ''
+
+    // NIP-20 has no machine-readable retry field, so the wait goes in the
+    // human-readable message; clients that parse it can back off precisely and
+    // the rest still see a normal rejection.
+    this.sendMessage(createCommandResult(eventId, false, describeRateLimit(retryAfterMs)))
+    return true
   }
 
   private onClientPong() {

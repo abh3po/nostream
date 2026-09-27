@@ -1,6 +1,7 @@
 import {
   AuthChallengeMessage,
   ClosedMessage,
+  CommandResult,
   CountResultMessage,
   CountResultPayload,
   EndOfStoredEventsNotice,
@@ -29,7 +30,10 @@ export const createEndOfStoredEventsNoticeMessage = (subscriptionId: Subscriptio
 }
 
 // NIP-20
-export const createCommandResult = (eventId: EventId, successful: boolean, message: string) => {
+// Typed as CommandResult so callers can pass it to sendMessage: without the
+// annotation TS infers a plain array and rejects it against the OutgoingMessage
+// union.
+export const createCommandResult = (eventId: EventId, successful: boolean, message: string): CommandResult => {
   return [MessageType.OK, eventId, successful, message]
 }
 

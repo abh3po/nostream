@@ -281,6 +281,18 @@ footer .sep { margin: 0 0.6rem; opacity: 0.5; }
   background: var(--emphasis);
   box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.15);
 }
+/* Rate limited: the relay is healthy, the client is over budget. Amber, not
+   red, so it does not read as an outage. */
+.monitor-status-warn .monitor-dot {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+}
+.monitor-warn { color: #b45309; }
+
+@media (prefers-color-scheme: dark) {
+  /* Amber needs lifting on a dark background to stay legible. */
+  .monitor-warn { color: #fbbf24; }
+}
 
 .monitor-meta {
   font-family: var(--font-mono);

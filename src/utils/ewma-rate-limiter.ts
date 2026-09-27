@@ -1,4 +1,4 @@
-import { IRateLimiter, IRateLimiterOptions } from '../@types/utils'
+import { IRateLimiter, IRateLimiterOptions, IRateLimitResult } from '../@types/utils'
 import { createLogger } from '../factories/logger-factory'
 import { ICacheAdapter } from '../@types/adapters'
 
@@ -6,6 +6,12 @@ const debug = createLogger('ewma-rate-limiter')
 
 const rateLimitScript = {
     NUMBER_OF_KEYS: 1,
+    // Returns `{allowed, projectedRate}`. Reporting the projected smoothed rate
+    // lets the caller compute how long until it decays back under the limit
+    // (see `check`), which is what a rejected client is told to wait.
+    //
+    // A refused hit is NOT recorded: recording it would keep inflating the
+    // average and extend the block for a client that is already backing off.
     SCRIPT: `
       local key = KEYS[1]
       local timestamp = tonumber(ARGV[1])
@@ -18,14 +24,14 @@ const rateLimitScript = {
       local lambda = math.log(2) / period
       local R_new  = R_old * math.exp(-lambda * deltaT) + tonumber(ARGV[4])
 
+      if R_new > rate then
+          return {0, tostring(R_new)}
+      end
+
       redis.call('HSET', key, 'rate', R_new, 'timestamp', timestamp)
       redis.call('EXPIRE', key, math.ceil(period / 1000))
 
-      if R_new > rate then
-          return 1
-      else
-          return 0
-      end
+      return {1, tostring(R_new)}
     `,
   }
 
@@ -49,6 +55,21 @@ export class EWMARateLimiter implements IRateLimiter {
     step: number,
     options: IRateLimiterOptions,
   ): Promise<boolean> {
+    return (await this.check(key, step, options)).limited
+  }
+
+  /**
+   * Like {@link hit}, but reports how long until the smoothed rate decays back
+   * under the limit.
+   *
+   * The EWMA follows `R(t) = R_0 * e^(-lambda t)`, so it falls back to `rate`
+   * after `t = ln(R / rate) / lambda`. That is the hint surfaced to clients.
+   */
+  public async check(
+    key: string,
+    step: number,
+    options: IRateLimiterOptions,
+  ): Promise<IRateLimitResult> {
     const { rate, period } = options
 
     const result = await this.cache.eval(rateLimitScript.SCRIPT,
@@ -56,9 +77,23 @@ export class EWMARateLimiter implements IRateLimiter {
        [Date.now().toString(), rate.toString(), period.toString(), step.toString()]
     )
 
-    debug('ewma rate limited on %s bucket: %s', key, result ? 'yes' : 'no')
+    // Redis returns the two-element table; tolerate a scalar from older caches.
+    const tuple = Array.isArray(result) ? result : [result, rate]
+    const allowed = Number(tuple[0]) === 1
+    const projectedRate = Number(tuple[1]) || rate
 
-    return result === 1
+    debug('ewma rate limited on %s bucket: %s', key, allowed ? 'no' : 'yes')
+
+    if (allowed) {
+      return { limited: false }
+    }
+
+    const lambda = Math.log(2) / period
+    const waitMs = projectedRate > rate && lambda > 0
+      ? Math.ceil(Math.log(projectedRate / rate) / lambda)
+      : 0
+
+    return { limited: true, retryAfterMs: Math.max(0, waitMs) }
   }
 
 }

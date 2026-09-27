@@ -13,25 +13,17 @@ npm-debug.log*
 
 # Dependency directories
 node_modules/
-package-lock.json
 
 # TypeScript cache
 *.tsbuildinfo
 
-# Optional package manager cache directories
+# Optional npm cache directory
 .npm
-.pnpm-store
-pnpm-debug.log*
 
 # Caches
 .eslintcache
 .dccache
 .DS_Store
-
-# Local Setup
-redis.conf
-users.acl
-postgresql.local.conf
 
 # generate output
 dist
@@ -47,8 +39,14 @@ dist
 
 # Docker Compose overrides
 docker-compose.overrides.yml
-# Export output
-*.jsonl
 
-# Code coverage report output
-coverage-report/
+# Yggdrasil keys and node registry — contains private keys, never commit
+yggdrasil-config/yggdrasil.conf
+# nodes.json is safe to commit (public keys only) but excluded here for simplicity
+yggdrasil-config/nodes.json
+
+# Storage node data directory
+data/
+# Deployment secrets: never commit real env files (compose reads .env).
+deploy/nostream-staging/.env
+deploy/nostream-staging/.env.*

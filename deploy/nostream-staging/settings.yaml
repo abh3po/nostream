@@ -1,0 +1,103 @@
+# Relay settings for the staging nostream that fronts mesh-PG.
+#
+# This is the *user overrides* file: it deep-merges over the image's
+# resources/default-settings.yaml. Keep it to overrides only.
+#
+# Mounted read-only by docker-compose.yml, so the running relay can never
+# mutate it; the source of truth is this repository.
+
+info:
+  # Canonical public URL. This is not just cosmetic: nostream derives the
+  # relay's signing key (NIP-11 `self`) from HMAC(SECRET, relay_url), and
+  # NIP-42 AUTH domain-matches the client's relay tag against it. Changing it
+  # changes `self`. Safe here because no relay-signed events exist yet
+  # (dvm/nip43/mirroring are disabled).
+  relay_url: wss://relay.formstr.app
+  name: "Formstr Relay"
+  description: "A public Nostr relay backed by mesh-PG — distributed, resilient, yours."
+  # NIP-11 `pubkey` is the administrative *contact* (not the relay's own key,
+  # which is `self`, derived above). This is the Formstr support/updates npub.
+  pubkey: "073cd836b557a9fdc2a62c27373273da0c556a7008763f7f0e2b7f28ea754fd6"
+  contact: mailto:team@formstr.app
+  # Served from the mounted resources/css dir (see docker-compose.yml).
+  icon: https://relay.formstr.app/css/formstr-icon.png
+  banner: https://relay.formstr.app/css/formstr-banner.png
+  terms_of_service: https://relay.formstr.app/terms
+
+relay:
+  port: 8008
+
+# Defaults enable both; this relay is intentionally public.
+authentication:
+  enabled: false
+authorization:
+  requireAdmission: false
+
+# Trust the reverse proxy so rate limits key on the real client IP.
+#
+# Without this, every connection arrives as the Docker bridge gateway
+# (172.28.0.1) and the default limits.connection bucket (12/sec, 48/min) is
+# shared by the entire internet: onConnection terminates clients right after
+# the NIP-42 AUTH challenge, so publishes silently die with a 1006 close.
+#
+# 172.28.0.1 is deterministic because docker-compose.yml pins the
+# nostream-net subnet to 172.28.0.0/16 — the bridge gateway is always the
+# first host address. Update this if that subnet ever changes.
+network:
+  remoteIpHeader: x-forwarded-for
+  trustedProxies:
+    - "127.0.0.1"
+    - "::ffff:127.0.0.1"
+    - "::1"
+    - "10.10.10.1"
+    - "::ffff:10.10.10.1"
+    - "172.28.0.1"
+    - "::ffff:172.28.0.1"
+
+limits:
+  event:
+    createdAt:
+      maxPositiveDelta: 900
+      maxNegativeDelta: 3600
+  # Per-IP raw-message budget.
+  #
+  # The upstream default is 240/min, sized for a local database where a REQ
+  # costs ~1ms. Here every read fans out over the mesh and waits for the
+  # slowest provider (measured P1 ~183ms RTT, p50 ~200ms, p99 ~3.7s), holding
+  # a pooled connection for the whole round trip. A saturated worker's pool
+  # queues without bound (observed: 24/24 used with 26,994 acquires pending),
+  # each willing to wait the full 60s acquire timeout; that backlog, not the
+  # request rate alone, is what makes the relay unresponsive for minutes.
+  #
+  # Measured live client rates: typical 2-6 msg/min, heaviest legitimate
+  # 33.6/min. 60 keeps ~2x headroom over the heaviest real client and ~10x over
+  # typical, while cutting an abusive IP from 240 to 60.
+  message:
+    rateLimits:
+      - description: 60 raw messages/min
+        period: 60000
+        rate: 60
+
+# NIP-42 read protection for private DMs.
+#
+# Only an authenticated client that authored the event or is p-tagged in it may
+# read these kinds. For kind 1059 (NIP-59 gift wrap) the wrapper pubkey is
+# ephemeral, so authorization reduces to the single `p` tag — i.e. only the
+# recipient (or the sender, who is also p-tagged in the NIP-17 scheme) can read
+# it. Enforced per-event on REQ streams, live broadcasts and COUNT
+# (src/utils/nip42.ts).
+#
+# Consequence: unauthenticated REQs that ask only for these kinds are closed
+# with `auth-required:`, so clients MUST implement NIP-42 AUTH to read DMs.
+#
+# Scope: this gates *who the relay hands the events to*. The payloads
+# themselves are already private — kind 1059 content is a NIP-44 ciphertext
+# addressed to the recipient, and its pubkey is a per-message ephemeral key, so
+# neither the relay nor another reader can recover the plaintext. The read
+# guard is metadata protection on top of that encryption, not the encryption.
+nip42:
+  restrictedReads:
+    enabled: true
+    kinds:
+      - 4 # NIP-04 encrypted direct messages
+      - 1059 # NIP-59 gift wraps (NIP-17 private DMs, Marmot welcomes)

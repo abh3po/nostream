@@ -127,12 +127,14 @@ describe('EventMessageHandler', () => {
       await handler.handleMessage(message)
 
       expect(isRateLimitedStub).to.have.been.calledOnceWithExactly(event)
-      expect(onMessageSpy).to.have.been.calledOnceWithExactly([
-        MessageType.OK,
-        event.id,
-        false,
-        'rate-limited: slow down',
-      ])
+      expect(onMessageSpy).to.have.been.calledOnce
+      const sent = onMessageSpy.firstCall.args[0]
+      expect(sent[0]).to.equal(MessageType.OK)
+      expect(sent[1]).to.equal(event.id)
+      expect(sent[2]).to.equal(false)
+      // The reason now carries a retry hint when the limiter can supply one;
+      // without a hint it still reads as a rate limit.
+      expect(sent[3]).to.include('rate-limited')
       expect(strategyFactoryStub).not.to.have.been.called
     })
 
@@ -1023,7 +1025,7 @@ describe('EventMessageHandler', () => {
       expect(actualResult).to.be.true
     })
 
-    it('stops hitting subsequent rate limit windows once one is exceeded', async () => {
+    it('checks every rate limit window to report the longest wait', async () => {
       eventLimits.rateLimits = [
         {
           period: 60000,
@@ -1039,7 +1041,9 @@ describe('EventMessageHandler', () => {
 
       const actualResult = await (handler as any).isRateLimited(event)
 
-      expect(rateLimiterHitStub).to.have.been.calledOnce
+      // Both windows are evaluated so the client can be told the longest wait
+      // rather than whichever limit happened to be checked first.
+      expect(rateLimiterHitStub).to.have.been.calledTwice
       expect(actualResult).to.be.true
     })
 

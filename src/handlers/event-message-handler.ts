@@ -44,6 +44,21 @@ import { WebSocketAdapterEvent } from '../constants/adapter'
 
 const logger = createLogger('event-message-handler')
 
+/**
+ * Rate-limit reason for a rejected event, including how long to wait.
+ *
+ * Mirrors the connection-level limiter's wording so a client can match on the
+ * `rate-limited:` prefix regardless of which limit it tripped (the per-pubkey
+ * event budget here, or the per-IP message budget in the socket adapter).
+ */
+const describeEventRateLimit = (retryAfterMs?: number): string => {
+  if (retryAfterMs === undefined || retryAfterMs <= 0) {
+    return 'rate-limited: too many events, slow down'
+  }
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000))
+  return `rate-limited: too many events, retry in ${seconds}s`
+}
+
 export class EventMessageHandler implements IMessageHandler {
   public constructor(
     protected readonly webSocket: IWebSocketAdapter,
@@ -80,7 +95,7 @@ export class EventMessageHandler implements IMessageHandler {
       logger('event %s rejected: rate-limited', event.id)
       this.webSocket.emit(
         WebSocketAdapterEvent.Message,
-        createEventCommandResult(event.id, false, 'rate-limited: slow down'),
+        createEventCommandResult(event.id, false, describeEventRateLimit(this.eventRateLimitWaitMs)),
       )
       return
     }
@@ -375,13 +390,10 @@ export class EventMessageHandler implements IMessageHandler {
       return Array.isArray(input) ? `[${input.map(toString)}]` : input.toString()
     }
 
-    const hit = ({ period, rate, kinds = undefined }: EventRateLimit) => {
-      const key = Array.isArray(kinds)
-        ? `${event.pubkey}:events:${period}:${toString(kinds)}`
-        : `${event.pubkey}:events:${period}`
-
-      return rateLimiter.hit(key, 1, { period, rate })
-    }
+    // Collect every exceeded limit's wait and report the longest, matching the
+    // connection-level limiter: a client told to retry in 1s when a second
+    // window holds it for an hour would just keep hammering.
+    let longestWait: number | undefined
 
     for (const { rate, period, kinds } of rateLimits) {
       // skip if event kind does not apply
@@ -389,24 +401,33 @@ export class EventMessageHandler implements IMessageHandler {
         continue
       }
 
-      let isRateLimited = false
+      const key = Array.isArray(kinds)
+        ? `${event.pubkey}:events:${period}:${toString(kinds)}`
+        : `${event.pubkey}:events:${period}`
+
       try {
-        isRateLimited = await hit({ period, rate, kinds })
+        const result = rateLimiter.check
+          ? await rateLimiter.check(key, 1, { period, rate })
+          : { limited: await rateLimiter.hit(key, 1, { period, rate }) }
+
+        if (result.limited) {
+          const wait = result.retryAfterMs ?? period
+          longestWait = longestWait === undefined ? wait : Math.max(longestWait, wait)
+        }
       } catch (error) {
         // Fail closed when the rate limiter backend is unavailable.
         logger('rate limiter unavailable for %s (%d/%d): %o', event.pubkey, rate, period, error)
-        return true
-      }
-
-      if (isRateLimited) {
-        logger('rate limited %s: %d events / %d ms exceeded', event.pubkey, rate, period)
-
+        this.eventRateLimitWaitMs = period
         return true
       }
     }
 
-    return false
+    this.eventRateLimitWaitMs = longestWait
+    return longestWait !== undefined
   }
+
+  /** Wait reported by the most recent {@link isRateLimited} call, if refused. */
+  private eventRateLimitWaitMs: number | undefined
 
   protected async isUserAdmitted(event: Event): Promise<string | undefined> {
     const currentSettings = this.settings()

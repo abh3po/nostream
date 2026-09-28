@@ -196,6 +196,9 @@
   "pnpm": {
     "overrides": {
       "serialize-javascript": ">=7.0.3 <8"
+    },
+    "patchedDependencies": {
+      "knex@2.4.2": "patches/knex@2.4.2.patch"
     }
   }
 }

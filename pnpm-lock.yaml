@@ -7,6 +7,11 @@ settings:
 overrides:
   serialize-javascript: '>=7.0.3 <8'
 
+patchedDependencies:
+  knex@2.4.2:
+    hash: ad8a7b146d63e4f6f5cb7a72feba4a605c3585d82e54669a1d4d2ba1b3ba2919
+    path: patches/knex@2.4.2.patch
+
 importers:
 
   .:
@@ -49,7 +54,7 @@ importers:
         version: 4.2.0
       knex:
         specifier: 2.4.2
-        version: 2.4.2(pg@8.9.0)
+        version: 2.4.2(patch_hash=ad8a7b146d63e4f6f5cb7a72feba4a605c3585d82e54669a1d4d2ba1b3ba2919)(pg@8.9.0)
       ora:
         specifier: ^9.3.0
         version: 9.4.0
@@ -5599,7 +5604,7 @@ snapshots:
 
   kind-of@6.0.3: {}
 
-  knex@2.4.2(pg@8.9.0):
+  knex@2.4.2(patch_hash=ad8a7b146d63e4f6f5cb7a72feba4a605c3585d82e54669a1d4d2ba1b3ba2919)(pg@8.9.0):
     dependencies:
       colorette: 2.0.19
       commander: 9.5.0

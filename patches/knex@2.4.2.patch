@@ -1,0 +1,43 @@
+--- a/lib/dialects/postgres/index.js
++++ b/lib/dialects/postgres/index.js
+@@ -193,17 +193,38 @@
+     const sql = obj.sql;
+ 
+     return new Promise(function (resolver, rejecter) {
++      // Settle at most once: 'end', 'close' and 'error' can all arrive.
++      let settled = false;
++      const settle = function () {
++        if (settled) return;
++        settled = true;
++        resolver();
++      };
++
++      // The consumer may already have destroyed this stream (e.g. a client
++      // aborted its subscription) while the pooled connection was still being
++      // acquired. In that case 'end'/'close' will never fire again, so settle
++      // now -- otherwise the awaiting ensureConnection never reaches its
++      // finally-block and the connection is never returned to the pool.
++      if (stream.destroyed) {
++        settle();
++        return;
++      }
++
+       const queryStream = connection.query(
+         new PGQueryStream(sql, obj.bindings, options)
+       );
+ 
+       queryStream.on('error', function (error) {
++        settled = true;
+         rejecter(error);
+         stream.emit('error', error);
+       });
+ 
+-      // 'end' IS propagated by .pipe, by default
+-      stream.on('end', resolver);
++      // 'end' is propagated by .pipe by default. 'close' covers a destroyed
++      // stream (destroy() emits 'close', not 'end'), which is the abort path.
++      stream.on('end', settle);
++      stream.on('close', settle);
+       queryStream.pipe(stream);
+     });
+   }

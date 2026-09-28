@@ -7,6 +7,9 @@ ARG PNPM_VERSION
 WORKDIR /build
 
 COPY ["package.json", "pnpm-lock.yaml", "./"]
+# patchedDependencies: pnpm hashes the patch files during install, so they must
+# be present before it runs.
+COPY patches ./patches
 
 RUN corepack enable && corepack prepare pnpm@$PNPM_VERSION --activate && pnpm install --frozen-lockfile --silent
 
@@ -31,6 +34,7 @@ ADD resources /app/resources
 
 COPY --from=build /build/dist .
 COPY --from=build /build/package.json /build/pnpm-lock.yaml ./
+COPY --from=build /build/patches ./patches
 COPY --from=build /build/migrations ./migrations
 COPY --from=build /build/knexfile.js ./knexfile.js
 

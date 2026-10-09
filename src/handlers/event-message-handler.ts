@@ -41,6 +41,8 @@ import { IRateLimiter } from '../@types/utils'
 import { IWebSocketAdapter } from '../@types/adapters'
 import { Nip05Verification } from '../@types/nip05'
 import { WebSocketAdapterEvent } from '../constants/adapter'
+import { ModerationDecision, ModerationService } from '../services/moderation-service'
+import { ModerationQuarantineMetadataKey } from '../constants/base'
 
 const logger = createLogger('event-message-handler')
 
@@ -69,6 +71,7 @@ export class EventMessageHandler implements IMessageHandler {
     private readonly nip05VerificationRepository: INip05VerificationRepository,
     private readonly cache: ICacheAdapter,
     private readonly rateLimiter: Factory<IRateLimiter>,
+    private readonly moderationService?: ModerationService,
   ) {}
 
   public async handleMessage(message: IncomingEventMessage): Promise<void> {
@@ -107,6 +110,16 @@ export class EventMessageHandler implements IMessageHandler {
       return
     }
 
+    const moderationDecision = this.moderationService?.evaluate(event)
+    if (moderationDecision?.action === 'reject') {
+      logger('event %s rejected: moderation rule %s', event.id, moderationDecision.rule)
+      this.webSocket.emit(
+        WebSocketAdapterEvent.Message,
+        createEventCommandResult(event.id, false, 'blocked: event flagged by moderation'),
+      )
+      return
+    }
+
     reason = this.isAuthenticationRequired(event)
     if (reason) {
       logger('event %s rejected: %s', event.id, reason)
@@ -142,6 +155,16 @@ export class EventMessageHandler implements IMessageHandler {
       return
     }
 
+    // Moderation (shadow): a quarantined event is still persisted via the
+    // normal strategy so an operator can review and overturn it, but it is
+    // tagged so the repository hides it and the socket adapter never
+    // broadcasts it. The client still receives a success OK, so a spammer
+    // cannot tell which rule fired.
+    if (moderationDecision?.action === 'quarantine') {
+      logger('event %s quarantined by moderation rule %s', event.id, moderationDecision.rule)
+      event = { ...event, [ModerationQuarantineMetadataKey]: moderationDecision.rule }
+    }
+
     const strategy = this.strategyFactory([event, this.webSocket])
 
     if (typeof strategy?.execute !== 'function') {
@@ -155,6 +178,7 @@ export class EventMessageHandler implements IMessageHandler {
     try {
       await strategy.execute(event)
       this.processNip05Metadata(event)
+      this.moderationService?.recordReport(event)
     } catch (error) {
       logger.error('error handling message', message, error)
       this.webSocket.emit(WebSocketAdapterEvent.Message, createEventCommandResult(event.id, false, 'error: unable to process event'))

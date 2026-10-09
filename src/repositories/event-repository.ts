@@ -20,10 +20,17 @@ import {
   EventDeduplicationMetadataKey,
   EventExpirationTimeMetadataKey,
   EventKinds,
+  ModerationQuarantineMetadataKey,
 } from '../constants/base'
 import { DatabaseClient, EventId } from '../@types/base'
 import { DBEvent, Event } from '../@types/event'
-import { EventPurgeCounts, EventRetentionOptions, IEventRepository, IQueryResult } from '../@types/repositories'
+import {
+  EventPurgeCounts,
+  EventRetentionOptions,
+  IEventRepository,
+  IQueryResult,
+  QuarantineListOptions,
+} from '../@types/repositories'
 import { toBuffer, toJSON } from '../utils/transform'
 import { createLogger } from '../factories/logger-factory'
 import { isGenericTagQuery, isGeohashPrefixCriterion, stripGeohashPrefixWildcard } from '../utils/filter'
@@ -129,6 +136,11 @@ export class EventRepository implements IEventRepository {
 
       builder.whereNull('events.deleted_at').andWhere((bd) => {
         bd.whereNull('events.expires_at').orWhere('events.expires_at', '>', now)
+      })
+
+      // Moderation: do not count quarantined events, unless overturned.
+      builder.where((bd) => {
+        bd.whereNull('events.quarantined_at').orWhereNotNull('events.moderation_overturned_at')
       })
 
       return builder
@@ -301,7 +313,10 @@ export class EventRepository implements IEventRepository {
   }
 
   private toInsertRow(event: Event) {
-    return applySpec({
+    const quarantineReason = prop(ModerationQuarantineMetadataKey as any)(event)
+    const isQuarantined = typeof quarantineReason === 'string' && quarantineReason.length > 0
+
+    const row = applySpec({
       event_id: pipe(prop('id'), toBuffer),
       event_pubkey: pipe(prop('pubkey'), toBuffer),
       event_created_at: prop('created_at'),
@@ -316,6 +331,18 @@ export class EventRepository implements IEventRepository {
         always(null),
       ),
     })(event)
+
+    // Only add the moderation columns when the event is actually quarantined,
+    // so ordinary inserts keep their previous column set.
+    if (isQuarantined) {
+      return {
+        ...row,
+        quarantined_at: this.masterDbClient.raw('now()'),
+        moderation_reason: quarantineReason,
+      }
+    }
+
+    return row
   }
 
   private insert(event: Event) {
@@ -453,6 +480,91 @@ export class EventRepository implements IEventRepository {
       .first()
 
     return Boolean(result)
+  }
+
+  public async createQuarantined(event: Event, reason: string): Promise<number> {
+    logger('inserting quarantined event: %o', event.id)
+    const row = {
+      ...this.toInsertRow(event),
+      quarantined_at: this.masterDbClient.raw('now()'),
+      moderation_reason: reason,
+    }
+
+    return this.masterDbClient('events')
+      .insert(row)
+      .onConflict()
+      .ignore()
+      .then(prop('rowCount') as () => number, () => 0)
+  }
+
+  public async listQuarantined(options?: QuarantineListOptions): Promise<DBEvent[]> {
+    const limit = options?.limit ?? 100
+    const offset = options?.offset ?? 0
+
+    return this.masterDbClient<DBEvent>('events')
+      .whereNotNull('quarantined_at')
+      .whereNull('moderation_overturned_at')
+      .orderBy('quarantined_at', 'desc')
+      .limit(limit)
+      .offset(offset)
+  }
+
+  public async countQuarantined(): Promise<number> {
+    const result = await this.masterDbClient('events')
+      .whereNotNull('quarantined_at')
+      .whereNull('moderation_overturned_at')
+      .count<{ count: string }>({ count: 'id' })
+      .first()
+
+    return Number(result?.count ?? 0)
+  }
+
+  public async findQuarantined(eventId: string): Promise<DBEvent | undefined> {
+    return this.masterDbClient<DBEvent>('events')
+      .where('event_id', toBuffer(eventId))
+      .whereNotNull('quarantined_at')
+      .first()
+  }
+
+  public async overturnQuarantine(eventId: string, reviewerPubkey: string): Promise<number> {
+    logger('overturning quarantine for event %s by %s', eventId, reviewerPubkey)
+
+    return this.masterDbClient('events')
+      .where('event_id', toBuffer(eventId))
+      .whereNotNull('quarantined_at')
+      .update({
+        moderation_overturned_at: this.masterDbClient.raw('now()'),
+        moderation_reviewed_by: toBuffer(reviewerPubkey),
+      })
+  }
+
+  public async deleteQuarantined(eventId: string): Promise<number> {
+    logger('hard-deleting quarantined event %s', eventId)
+
+    return this.masterDbClient('events')
+      .where('event_id', toBuffer(eventId))
+      .whereNotNull('quarantined_at')
+      .del()
+  }
+
+  public async purgeExpiredQuarantines(windowSeconds: number): Promise<number> {
+    if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) {
+      return 0
+    }
+
+    const cutoff = new Date(Date.now() - windowSeconds * 1000)
+
+    const affected = await this.masterDbClient('events')
+      .whereNotNull('quarantined_at')
+      .whereNull('moderation_overturned_at')
+      .where('quarantined_at', '<', cutoff)
+      .del()
+
+    if (affected > 0) {
+      logger.info('[Maintenance] Hard-deleted %d quarantined events past the window.', affected)
+    }
+
+    return affected
   }
 
   public deleteExpiredAndRetained(options?: EventRetentionOptions): Promise<EventPurgeCounts> {

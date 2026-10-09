@@ -318,3 +318,49 @@ admin:
     enabled: false
     allowedPubkeys: []
     maxSkewSeconds: 60
+moderation:
+  # Programmatic content/behaviour moderation with a human review window.
+  # See MODERATION.md. Events caught by a rule are stored but
+  # hidden from reads, answered with a normal OK (shadow), and hard-deleted
+  # after quarantineSeconds unless an admin overturns them.
+  enabled: false
+  # Plaintext kinds whose content is scanned. Encrypted kinds (4, 1059) are
+  # never scanned regardless of this list.
+  scanKinds:
+    - 0
+    - 1
+    - 1111
+    - 30023
+  # Seconds a quarantined event is held for review before hard delete.
+  quarantineSeconds: 86400
+  # NIP-56 report kinds counted toward the report quorum.
+  reportTypes:
+    - spam
+    - profanity
+  # Base URL of the internal db-api used to resolve admin identity for the
+  # moderation API (`GET /members/{npub}`). Empty defaults to
+  # MODERATION_MEMBERS_API_URL or http://db:4000. Fails closed when unreachable.
+  membersApiUrl: ""
+  rules:
+    appStorePromo:
+      enabled: true
+      action: quarantine
+    selfPromoBoilerplate:
+      enabled: true
+      action: quarantine
+    linkFlood:
+      enabled: true
+      action: quarantine
+    hashtagStuffing:
+      enabled: true
+      action: quarantine
+  duplicateBurst:
+    enabled: true
+    action: quarantine
+    minCount: 5
+    windowSeconds: 86400
+  reportQuorum:
+    enabled: true
+    action: quarantine
+    minReporters: 3
+    windowSeconds: 604800

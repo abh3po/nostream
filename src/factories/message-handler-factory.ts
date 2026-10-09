@@ -15,6 +15,7 @@ import { eventStrategyFactory } from './event-strategy-factory'
 import { getCacheClient } from '../cache/client'
 import { RedisAdapter } from '../adapters/redis-adapter'
 import { rateLimiterFactory } from './rate-limiter-factory'
+import { createModerationService } from './moderation-service-factory'
 import { SubscribeMessageHandler } from '../handlers/subscribe-message-handler'
 import { UnsubscribeMessageHandler } from '../handlers/unsubscribe-message-handler'
 
@@ -53,6 +54,7 @@ export const messageHandlerFactory =
           nip05VerificationRepository,
           getCache(),
           rateLimiterFactory,
+          createModerationService(),
         )
       }
       case MessageType.REQ:

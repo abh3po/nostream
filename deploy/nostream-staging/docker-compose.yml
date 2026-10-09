@@ -103,6 +103,7 @@ services:
       start_period: 30s
     networks:
       - nostream-net
+      - storage_default
 
   nostream-cache:
     image: redis:7.0.5-alpine3.16
@@ -121,16 +122,37 @@ services:
     networks:
       - nostream-net
 
+  # Standalone moderation review UI (decoupled from the storage control plane).
+  # Holds no keys; forwards the operator's NIP-98 header to the relay.
+  moderation:
+    build:
+      context: ../..
+      dockerfile: ./moderation/Dockerfile
+    image: nso-moderation:staging
+    pull_policy: never
+    container_name: nso_moderation
+    restart: unless-stopped
+    environment:
+      MODERATION_UI_PORT: ${MODERATION_UI_PORT:-3010}
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-wss://relay.formstr.app}
+      RELAY_MODERATION_BASE_URL: ${RELAY_MODERATION_BASE_URL:-https://relay.formstr.app}
+      MODERATION_ORIGIN: ${MODERATION_ORIGIN:-https://relay.formstr.app}
+    ports:
+      - "127.0.0.1:${MODERATION_UI_PORT:-3010}:${MODERATION_UI_PORT:-3010}"
+    networks:
+      - nostream-net
+
 networks:
   nostream-net:
     name: nostream-net
     driver: bridge
-    # Pinned so the bridge gateway is always 172.28.0.1 — settings.yaml's
-    # network.trustedProxies lists it so rate limits key on the real client
-    # IP (X-Forwarded-For) instead of collapsing every client into one bucket.
     ipam:
       config:
         - subnet: 172.28.0.0/16
+  # db-api lives here as `db`; the relay needs it for the moderation admin check.
+  storage_default:
+    external: true
+    name: storage_default
 
 volumes:
   nostream_cache:

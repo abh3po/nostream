@@ -4,6 +4,7 @@ import {
   EventDeduplicationMetadataKey,
   EventExpirationTimeMetadataKey,
   EventKinds,
+  ModerationQuarantineMetadataKey,
 } from '../constants/base'
 
 export interface BaseEvent {
@@ -18,6 +19,8 @@ export interface BaseEvent {
 
 export interface Event extends BaseEvent {
   [ContextMetadataKey]?: ContextMetadata
+  /** When set, the event is stored into quarantine instead of published. */
+  [ModerationQuarantineMetadataKey]?: string
 }
 
 export type RelayedEvent = Event
@@ -47,7 +50,20 @@ export interface DBEvent {
   first_seen: Date
   deleted_at?: Date
   expires_at?: number
+  /**
+   * Moderation quarantine marker. A non-null value means the event is hidden
+   * from REQ/COUNT/live broadcasts and is hard-deleted once the quarantine
+   * window elapses unless an operator overturns it.
+   */
+  quarantined_at?: Date | null
+  /** Rule name that caused the quarantine, for the operator's review. */
+  moderation_reason?: string | null
+  /** Set when an operator overturns (restores) a quarantined event. */
+  moderation_overturned_at?: Date | null
+  /** Pubkey of the admin who last acted on this event, if any. */
+  moderation_reviewed_by?: Buffer | null
 }
+
 
 export type ReactionEntry = {
   targetEventId?: string

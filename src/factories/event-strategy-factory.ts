@@ -25,7 +25,9 @@ import { IEventStrategy } from '../@types/message-handlers'
 import { InviteRequestEventStrategy } from '../handlers/event-strategies/invite-request-event-strategy'
 import { JoinRequestEventStrategy } from '../handlers/event-strategies/join-request-event-strategy'
 import { LeaveRequestEventStrategy } from '../handlers/event-strategies/leave-request-event-strategy'
+import { ModerationQuarantineMetadataKey } from '../constants/base'
 import { ParameterizedReplaceableEventStrategy } from '../handlers/event-strategies/parameterized-replaceable-event-strategy'
+import { QuarantineEventStrategy } from '../handlers/event-strategies/quarantine-event-strategy'
 import { ReplaceableEventStrategy } from '../handlers/event-strategies/replaceable-event-strategy'
 import { Settings } from '../@types/settings'
 import { TimestampEventStrategy } from '../handlers/event-strategies/timestamp-event-strategy'
@@ -41,6 +43,11 @@ export const eventStrategyFactory =
     settings: () => Settings,
   ): Factory<IEventStrategy<Event, Promise<void>>, [Event, IWebSocketAdapter]> =>
   ([event, adapter]: [Event, IWebSocketAdapter]) => {
+    const quarantineReason = (event as Event)[ModerationQuarantineMetadataKey]
+    if (typeof quarantineReason === 'string' && quarantineReason.length > 0) {
+      return new QuarantineEventStrategy(adapter, eventRepository, quarantineReason)
+    }
+
     if (isRequestToVanishEvent(event)) {
       return new VanishEventStrategy(adapter, eventRepository, userRepository)
     } else if (isGiftWrapEvent(event)) {

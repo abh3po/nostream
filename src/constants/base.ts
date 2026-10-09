@@ -16,6 +16,8 @@ export enum EventKinds {
   // NIP-25: External content reaction
   EXTERNAL_CONTENT_REACTION = 17,
   REQUEST_TO_VANISH = 62,
+  // NIP-56: Reporting
+  REPORT = 1984,
   // Channels
   CHANNEL_CREATION = 40,
   CHANNEL_METADATA = 41,
@@ -124,3 +126,5 @@ export enum PaymentsProcessors {
 export const EventDeduplicationMetadataKey = Symbol('Deduplication')
 export const ContextMetadataKey = Symbol('Context')
 export const EventExpirationTimeMetadataKey = Symbol('Expiration')
+/** Set on an event that should be written into quarantine rather than published. */
+export const ModerationQuarantineMetadataKey = Symbol('ModerationQuarantine')

@@ -228,6 +228,8 @@ export class SubscribeMessageHandler implements IMessageHandler, IAbortable {
       await pipeline(
         abortableFindEvents,
         streamFilter(propSatisfies(isNil, 'deleted_at')),
+        // Hidden only while quarantined and not overturned.
+        streamFilter((event) => !event.quarantined_at || Boolean(event.moderation_overturned_at)),
         streamMap(toNostrEvent),
         streamFilter(isTagUnexpired),
         streamFilter(isReadAuthorized),

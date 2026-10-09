@@ -48,5 +48,9 @@ yggdrasil-config/nodes.json
 # Storage node data directory
 data/
 # Deployment secrets: never commit real env files (compose reads .env).
+# Keep the tracked .env.example template (an open-source secret-free sample).
 deploy/nostream-staging/.env
-deploy/nostream-staging/.env.*
+deploy/nostream-staging/.env.bak*
+deploy/nostream-staging/.env.local
+deploy/nostream-staging/.env.*.local
+!deploy/nostream-staging/.env.example

@@ -28,6 +28,11 @@ export interface IQueryResult<T> extends Pick<Promise<T>, keyof Promise<T> & Exp
   stream(options?: Record<string, any>): PassThrough & AsyncIterable<T>
 }
 
+export interface QuarantineListOptions {
+  limit?: number
+  offset?: number
+}
+
 export interface IEventRepository {
   create(event: Event): Promise<number>
   createMany(events: Event[]): Promise<number>
@@ -39,7 +44,22 @@ export interface IEventRepository {
   deleteByPubkeyExceptKinds(pubkey: Pubkey, excludedKinds: number[]): Promise<number>
   hasActiveRequestToVanish(pubkey: Pubkey): Promise<boolean>
   deleteExpiredAndRetained(options?: EventRetentionOptions): Promise<EventPurgeCounts>
+  /** Insert a newly received event directly into quarantine (not published). */
+  createQuarantined(event: Event, reason: string): Promise<number>
+  /** Quarantined events awaiting review, newest first. */
+  listQuarantined(options?: QuarantineListOptions): Promise<DBEvent[]>
+  /** A single quarantined event by id, or undefined. */
+  findQuarantined(eventId: EventId): Promise<DBEvent | undefined>
+  /** Overturn (restore) a quarantined event, recording the reviewer. */
+  overturnQuarantine(eventId: EventId, reviewerPubkey: Pubkey): Promise<number>
+  /** Hard-delete a specific quarantined event immediately. */
+  deleteQuarantined(eventId: EventId): Promise<number>
+  /** Hard-delete quarantined events older than the window and not overturned. */
+  purgeExpiredQuarantines(windowSeconds: number):Promise<number>
+  /** Count of events currently awaiting review. */
+  countQuarantined(): Promise<number>
 }
+
 
 export interface IInvoiceRepository {
   findById(id: string, client?: DatabaseClient): Promise<Invoice | undefined>

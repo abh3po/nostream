@@ -398,9 +398,78 @@ export interface Nip43Settings {
   inviteRequestWhitelist?: Pubkey[]
 }
 
+/** What to do when a moderation rule matches an incoming event. */
+export type ModerationAction = 'quarantine' | 'reject'
+
+export interface ModerationRuleSettings {
+  /** Defaults to true. */
+  enabled?: boolean
+  /** Defaults to 'quarantine'. */
+  action?: ModerationAction
+}
+
+export interface ModerationContentRulesSettings {
+  /** App-store URL + marketing hashtags/links (commercial app spam). */
+  appStorePromo?: ModerationRuleSettings
+  /** Recurring "I built N+ apps" self-promotion boilerplate. */
+  selfPromoBoilerplate?: ModerationRuleSettings
+  /** Many links in one note with little prose. */
+  linkFlood?: ModerationRuleSettings
+  /** Many hashtags with little prose. */
+  hashtagStuffing?: ModerationRuleSettings
+}
+
+export interface ModerationDuplicateBurstSettings {
+  /** Defaults to true. */
+  enabled?: boolean
+  /** Defaults to 'quarantine'. */
+  action?: ModerationAction
+  /** Events from one author sharing a content fingerprint within the window. */
+  minCount?: number
+  /** Rolling window in seconds. Defaults to 86400. */
+  windowSeconds?: number
+}
+
+export interface ModerationReportQuorumSettings {
+  /** Defaults to true. */
+  enabled?: boolean
+  /** Defaults to 'quarantine'. */
+  action?: ModerationAction
+  /** Distinct NIP-56 reporters flagging one pubkey before it is quarantined. */
+  minReporters?: number
+  /** Rolling window in seconds. Defaults to 604800 (7 days). */
+  windowSeconds?: number
+}
+
+export interface ModerationSettings {
+  enabled: boolean
+  /**
+   * Event kinds/ranges whose content is scanned. Encrypted kinds (4, 1059) are
+   * never scanned. Defaults to plaintext note-like kinds (0, 1, 1111, 30023).
+   */
+  scanKinds?: (EventKinds | EventKindsRange)[]
+  /** Seconds a quarantined event is held before hard delete. Defaults to 86400 (24h). */
+  quarantineSeconds?: number
+  rules?: ModerationContentRulesSettings
+  duplicateBurst?: ModerationDuplicateBurstSettings
+  reportQuorum?: ModerationReportQuorumSettings
+  /**
+   * NIP-56 report type strings counted toward the report quorum. Defaults to
+   * ['spam', 'profanity'].
+   */
+  reportTypes?: string[]
+  /**
+   * Base URL of the internal db-api used to resolve admin identity for the
+   * moderation API (`GET /members/{npub}`). Defaults to MODERATION_MEMBERS_API_URL
+   * or http://db:4000. The check fails closed when unreachable.
+   */
+  membersApiUrl?: string
+}
+
 export interface Settings {
   info: Info
   admin?: AdminSettings
+  moderation?: ModerationSettings
   payments?: Payments
   paymentsProcessors?: PaymentsProcessors
   network: Network

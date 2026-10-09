@@ -101,3 +101,34 @@ nip42:
     kinds:
       - 4 # NIP-04 encrypted direct messages
       - 1059 # NIP-59 gift wraps (NIP-17 private DMs, Marmot welcomes)
+
+# Programmatic moderation with a human review window (moderation/ UI).
+# enabled starts false; flip to true to begin hiding flagged events.
+moderation:
+  enabled: true
+  quarantineSeconds: 86400
+  scanKinds:
+    - 0
+    - 1
+    - 1111
+    - 30023
+  reportTypes:
+    - spam
+    - profanity
+  # db-api is reachable as `db` once this relay is attached to storage_default.
+  membersApiUrl: http://db:4000
+  rules:
+    appStorePromo: { enabled: true, action: quarantine }
+    selfPromoBoilerplate: { enabled: true, action: quarantine }
+    linkFlood: { enabled: true, action: quarantine }
+    hashtagStuffing: { enabled: true, action: quarantine }
+  duplicateBurst:
+    enabled: false
+    action: quarantine
+    minCount: 5
+    windowSeconds: 86400
+  reportQuorum:
+    enabled: true
+    action: quarantine
+    minReporters: 3
+    windowSeconds: 604800

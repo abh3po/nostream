@@ -417,6 +417,8 @@ export interface ModerationContentRulesSettings {
   linkFlood?: ModerationRuleSettings
   /** Many hashtags with little prose. */
   hashtagStuffing?: ModerationRuleSettings
+  /** Recurring "Block <height>" + fee-priority table + #bitcoinfees/#mempool. */
+  bitcoinBlockFees?: ModerationRuleSettings
 }
 
 export interface ModerationDuplicateBurstSettings {

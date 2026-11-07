@@ -59,4 +59,34 @@ describe('utils/moderation', () => {
       evaluateContentRules(event, enabled as any, { ...DEFAULT_CONTENT_RULE_THRESHOLDS, linkFloodMinUrls: 3 }),
     ).to.equal('link_flood')
   })
+
+  it('flags the bitcoin block fee template', () => {
+    const content = [
+      'Block 974759',
+      '',
+      '4 - high priority',
+      '4 - medium priority',
+      '4 - low priority',
+      '2 - no priority',
+      '1 - purging',
+      '',
+      '#bitcoinfees #mempool',
+    ].join('\n')
+    expect(evaluateContentRules({ ...base, content }, enabled as any)).to.equal('bitcoin_block_fees')
+  })
+
+  it('does not flag a fee summary without the block header', () => {
+    const content = '4 - high priority\n4 - medium priority\n4 - low priority\n#bitcoinfees #mempool'
+    expect(evaluateContentRules({ ...base, content }, enabled as any)).to.equal(undefined)
+  })
+
+  it('does not flag a fee summary without the fee hashtags', () => {
+    const content = 'Block 974759\n\n4 - high priority\n4 - medium priority\n4 - low priority'
+    expect(evaluateContentRules({ ...base, content }, enabled as any)).to.equal(undefined)
+  })
+
+  it('does not flag a normal note mentioning priorities and mempool', () => {
+    const content = 'high priority fix landed; low priority mempool cleanup can wait'
+    expect(evaluateContentRules({ ...base, content }, enabled as any)).to.equal(undefined)
+  })
 })

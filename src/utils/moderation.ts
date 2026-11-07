@@ -22,11 +22,20 @@ const SELF_PROMO_BOILERPLATE =
 const URL_RE = /https?:\/\/[^\s<>"')]+/gi
 const HASHTAG_RE = /#[\p{L}\p{N}_]+/gu
 
+// Bitcoin block-fee summary bot: "Block 974759" followed by a priority table
+// and the #bitcoinfees / #mempool hashtags. The block height and the counts
+// change every block, so the duplicate-burst fingerprint cannot catch it.
+const BLOCK_FEES_HEADER = /(?:^|\n)\s*block\s*#?\d{3,}\b/i
+const BLOCK_FEES_PRIORITY_LINE = /\b\d+\s*-\s*(?:high|medium|low|no)\s+priority\b/gi
+const BLOCK_FEES_HASHTAG = /#(?:bitcoinfees|mempool)\b/i
+const BLOCK_FEES_MIN_PRIORITY_LINES = 3
+
 export type ModerationRule =
   | 'app_store_promo'
   | 'self_promo_boilerplate'
   | 'link_flood'
   | 'hashtag_stuffing'
+  | 'bitcoin_block_fees'
 
 export interface ContentRuleThresholds {
   /** Minimum distinct links in one event to flag as a link flood. */
@@ -138,6 +147,17 @@ export const evaluateContentRules = (
       proseLength(content) < thresholds.hashtagStuffingMaxProse
     ) {
       return 'hashtag_stuffing'
+    }
+  }
+
+  if (isRuleEnabled(rules.bitcoinBlockFees?.enabled)) {
+    const priorityLines = (content.match(BLOCK_FEES_PRIORITY_LINE) ?? []).length
+    if (
+      BLOCK_FEES_HEADER.test(content) &&
+      priorityLines >= BLOCK_FEES_MIN_PRIORITY_LINES &&
+      BLOCK_FEES_HASHTAG.test(content)
+    ) {
+      return 'bitcoin_block_fees'
     }
   }
 

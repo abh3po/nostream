@@ -74,6 +74,15 @@ describe('ModerationService', () => {
     expect(service.evaluate(event)).to.deep.equal({ action: 'quarantine', rule: 'hashtag_stuffing' })
   })
 
+  it('flags the bitcoin block fee template', () => {
+    const service = makeService({ enabled: true })
+    const event = makeEvent({
+      content:
+        'Block 974759\n\n4 - high priority\n4 - medium priority\n4 - low priority\n2 - no priority\n1 - purging\n\n#bitcoinfees #mempool',
+    })
+    expect(service.evaluate(event)).to.deep.equal({ action: 'quarantine', rule: 'bitcoin_block_fees' })
+  })
+
   it('never scans encrypted kinds', () => {
     const service = makeService({ enabled: true, scanKinds: [1] })
     const event = makeEvent({ kind: 4, content: 'see https://a.com https://b.com https://c.com https://d.com' })

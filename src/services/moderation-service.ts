@@ -251,6 +251,8 @@ const resolveRuleAction = (moderation: ModerationSettings, rule: ModerationRule)
       return rules?.linkFlood?.action ?? 'quarantine'
     case 'hashtag_stuffing':
       return rules?.hashtagStuffing?.action ?? 'quarantine'
+    case 'bitcoin_block_fees':
+      return rules?.bitcoinBlockFees?.action ?? 'quarantine'
     default:
       return 'quarantine'
   }

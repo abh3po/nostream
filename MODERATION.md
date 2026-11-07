@@ -26,6 +26,7 @@ Per-event content rules (`src/utils/moderation.ts`):
 | `self_promo_boilerplate` | "I built N+ apps … solo developer" style copy |
 | `link_flood` | Many links in one event with little prose |
 | `hashtag_stuffing` | Many hashtags with little prose |
+| `bitcoin_block_fees` | `Block <height>` + fee-priority table + `#bitcoinfees` / `#mempool` template |
 
 Stateful rules (`src/services/moderation-service.ts`):
 

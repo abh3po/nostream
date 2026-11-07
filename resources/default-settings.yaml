@@ -354,6 +354,9 @@ moderation:
     hashtagStuffing:
       enabled: true
       action: quarantine
+    bitcoinBlockFees:
+      enabled: true
+      action: quarantine
   duplicateBurst:
     enabled: true
     action: quarantine

@@ -4,12 +4,28 @@ Declarative deployment for the `nso_nostream` relay that fronts mesh-PG on the
 staging orchestrator host. This replaces a hand-started container that was not
 part of any compose project — so a host reboot used to leave the relay down.
 
+**Reads** come from the orchestrator's central Postgres (same host), which
+pg-gateway already fills with every captured event row; **writes** still go
+through pg-gateway to the mesh providers. This split is what removed the
+per-REQ mesh fan-out and the low per-IP connection cap. See
+`docs/RELAY_READ_SCALING.md` in the orchestrator repo.
+
+> **Source of truth:** the live relay is composed from the copy inside the
+> **nostream fork** (`abh3po/nostream`, `deploy/nostream-staging/`), checked out
+> on the host at `/root/Servers/nostream`. This directory is a **reference
+> mirror** of that copy — the two drifted once (this one was missing the
+> message rate limit and the container log cap), which is exactly the kind of
+> difference that turns into a regression if it is ever deployed from. When you
+> change relay config, change it in the fork and mirror it here in the same
+> session.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | `nostream` + `nostream-cache`, pinned network |
+| `docker-compose.yml` | `nostream` + `nostream-cache`, pinned network, central read replica |
 | `settings.yaml` | Relay settings overrides, mounted read-only |
+| `sql/central-event-tags.sql` | Enable/rebuild the central `event_tags` derived table |
 | `resources/` | Landing page (`index.html`, `css/style.css`), mounted read-only |
 | `.env.example` | Secrets / tuning template |
 
@@ -50,9 +66,20 @@ self-contained — no external fonts/scripts — to satisfy the image's CSP.
 
 ```bash
 cd deploy/nostream-staging
-cp .env.example .env && $EDITOR .env          # set SECRET, DB_PASSWORD, REDIS_PASSWORD
+cp .env.example .env && $EDITOR .env
+# set SECRET, DB_PASSWORD (pg-gateway), REDIS_PASSWORD, and
+# READ_DB_* to the root stack's POSTGRES_USER/PASSWORD/DB
+# (defaults: orchestrator/orchestrator, host `postgres`)
+# Existing deployment: prepare the derived event_tags table before the relay
+# serves reads from central Postgres (takes a write lock on events):
+docker compose stop nostream
+(cd ../.. && ./scripts/relay-central-read-index.sh)
 docker compose up -d
 ```
+
+For a fresh install, `events`/`event_tags` do not exist until nostream has run
+its migrations through pg-gateway once. Start it, stop it, run the script, then
+start it again. The script refuses to run if `public.events` is missing.
 
 The nostream image (`NOSTREAM_IMAGE`, default `nostream-mesh:staging`) must
 already be loaded on the host. See the fork build notes in
@@ -76,8 +103,10 @@ docker compose up -d
 ```
 
 The old redis `cache` volume is not reused (compose gets a fresh project
-volume). Relay state that matters — events — lives in mesh-PG, not redis, so
-this only costs transient cache contents.
+volume). Relay state that matters — events — lives in the central Postgres
+hot-read copy and on the mesh-PG providers, not redis, so this only costs
+transient cache contents. Run `scripts/relay-central-read-index.sh` once after
+the cutover to rebuild the derived `event_tags` table.
 
 ## Trusted proxy / rate limiting
 
@@ -87,9 +116,11 @@ this only costs transient cache contents.
 host address (`172.28.0.1`), so the two stay consistent. nginx already sends
 `X-Forwarded-For`.
 
-Without this, every public connection appears to come from the proxy, and the
-default `limits.connection` bucket (12/sec, 48/min) is shared by all clients —
-connections get terminated right after the AUTH challenge and publishes fail.
+Without this, every public connection appears to come from the proxy and the
+per-IP buckets are shared by all clients — connections get terminated right
+after the AUTH challenge and publishes fail. The current overrides are 30/s +
+600/min for new connections and 240 messages/min per IP; see `settings.yaml`
+for why they are no longer tied to mesh read latency.
 
 ## nginx per-IP connection limits
 
@@ -105,17 +136,38 @@ The relay vhosts and the limit zones live in the **host nginx repo**,
 Both hostnames proxy to the same backend (`127.0.0.1:8008`), so one set of
 limits covers both.
 
-Why: nostream holds a DB-pool connection per in-flight subscription/event
-handler. On 2026-09-18 one client opened and abandoned hundreds of connections
-(~600 aborts in 30 min, repeated oversized payloads), which starved the pool
-and wedged every write relay-wide with `KnexTimeoutError: Timeout acquiring a
-connection` until nostream was restarted. nostream has no IP blacklist —
-`ipWhitelist` only *exempts* IPs from its limiter — so the cap belongs at nginx.
+Why this existed: when reads went through pg-gateway, nostream held a DB-pool
+connection for the whole mesh round trip (p99 ~3.7 s). On 2026-09-18 one client
+opened and abandoned hundreds of connections (~600 aborts in 30 min), which
+starved the pool and wedged every write relay-wide with `KnexTimeoutError`
+until nostream was restarted. nostream has no IP blacklist — `ipWhitelist` only
+*exempts* IPs from its limiter — so the cap was put at nginx.
 
-`limit_conn` (max 30 concurrent connections per IP) bounds the pool-starvation
-vector; `limit_req` (10 r/s, burst 20) bounds connection churn. Values are
-deliberately generous: a normal client uses 1–2 connections, and mobile-carrier
-NAT can put many users behind one address.
+That bottleneck is gone: reads now come from central Postgres and return a
+connection in ~1 ms. **`limit_conn` is per IP, not global**, so do not read the
+number below as the relay's total capacity:
+
+```nginx
+limit_conn relay_conn 30;               # per IP; 3-5x the old value, start here
+limit_conn relay_total 400;             # optional global cap for this vhost
+limit_req  zone=relay_connrate burst=60 nodelay;
+```
+
+and in `conf.d/relay-limits.conf`:
+
+```nginx
+limit_conn_zone $binary_remote_addr zone=relay_conn:10m;
+limit_conn_zone $server_name       zone=relay_total:1m;
+limit_req_zone  $binary_remote_addr zone=relay_connrate:10m rate=30r/s;
+```
+
+A normal client still uses 1–2 connections, but mobile-carrier NAT can put many
+users behind one address, and clients legitimately open several subscriptions
+per connection. The real total is bounded by nginx `worker_connections`
+(768/worker; a proxied WebSocket uses ~2), relay fd/memory, and Postgres
+connections. `RR0_DB_MAX_POOL_SIZE` is a **shared pool**, not per IP. The full
+sizing rationale and verification steps are in `docs/RELAY_READ_SCALING.md` in
+the orchestrator repo.
 
 Edit on the host and push:
 

@@ -36,27 +36,39 @@ services:
       # Same reasoning as the read pool: a publish must not hang for a
       # minute behind a busy worker.
       DB_ACQUIRE_CONNECTION_TIMEOUT: ${DB_ACQUIRE_CONNECTION_TIMEOUT:-3000}
-      # Split reads and writes into separate pools. nostream's REQ streaming
-      # (findByFilters) uses the read-replica client and holds a pooled
-      # connection for the subscription's lifetime; with READ_REPLICA_ENABLED
-      # false that falls back to the master pool, so a burst of subscriptions
-      # shares the connections writes need and starves them (KnexTimeoutError,
-      # publishes never reach the buffer). There is no separate replica, so
-      # RR0_* points at the same gateway.
+      # Split reads and writes into separate pools.
+      #
+      # Writes still go through pg-gateway (DB_* above), which captures the
+      # authoritative row into the orchestrator's central Postgres before
+      # enqueueing it for the mesh. Reads deliberately do NOT go through the
+      # gateway: every non-point REQ fans out over the mesh and holds a pooled
+      # connection for the whole round trip (measured p99 ~3.7s). That is what
+      # capped us at a handful of concurrent subscriptions per IP.
+      #
+      # RR0_* points at that same central Postgres instead. It is on the same
+      # host, already contains every captured `events` row, and answers the
+      # relay's indexed queries in ~1ms, so a connection is returned almost
+      # immediately and the pool serves many more concurrent subscriptions.
+      # This is a hot-read copy, not a new source of truth: mesh-PG providers
+      # remain the distributed store.
+      #
+      # `event_tags` is derived. pg-gateway capture runs with
+      # session_replication_role=replica, so the central copy needs the trigger
+      # marked ALWAYS and a one-time rebuild:
+      #   ./scripts/relay-central-read-index.sh
+      # See docs/RELAY_READ_SCALING.md in the orchestrator repo.
       READ_REPLICA_ENABLED: "true"
       READ_REPLICAS: "1"
-      RR0_DB_HOST: ${DB_HOST:-172.17.0.1}
-      RR0_DB_PORT: ${DB_PORT:-55432}
-      RR0_DB_USER: ${DB_USER:-orchestrator}
-      RR0_DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      RR0_DB_NAME: ${DB_NAME:-nostr_ts_relay}
+      RR0_DB_HOST: ${READ_DB_HOST:-postgres}
+      RR0_DB_PORT: ${READ_DB_PORT:-5432}
+      RR0_DB_USER: ${READ_DB_USER:-orchestrator}
+      RR0_DB_PASSWORD: ${READ_DB_PASSWORD:?READ_DB_PASSWORD is required}
+      RR0_DB_NAME: ${READ_DB_NAME:-orchestrator}
       RR0_DB_MIN_POOL_SIZE: ${RR0_DB_MIN_POOL_SIZE:-0}
-      RR0_DB_MAX_POOL_SIZE: ${RR0_DB_MAX_POOL_SIZE:-24}
-      # Fail fast instead of queueing: at 60s a saturated pool grows a
-      # 26k-deep backlog of reads all waiting a full minute, which is what
-      # takes the relay down for minutes. Measured read p99 is ~3.7s, so 3s
-      # is above the normal path but refuses to join a runaway queue.
-      RR0_DB_ACQUIRE_CONNECTION_TIMEOUT: ${RR0_DB_ACQUIRE_CONNECTION_TIMEOUT:-3000}
+      RR0_DB_MAX_POOL_SIZE: ${RR0_DB_MAX_POOL_SIZE:-40}
+      # Local queries are ~1ms; 5s is already an order of magnitude above the
+      # normal path and still refuses to join a runaway queue.
+      RR0_DB_ACQUIRE_CONNECTION_TIMEOUT: ${RR0_DB_ACQUIRE_CONNECTION_TIMEOUT:-5000}
       REDIS_HOST: nostream-cache
       REDIS_PORT: "6379"
       REDIS_USER: ${REDIS_USER:-default}

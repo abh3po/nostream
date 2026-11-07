@@ -59,24 +59,35 @@ limits:
     createdAt:
       maxPositiveDelta: 900
       maxNegativeDelta: 3600
+  # Per-IP connection churn. These are connection *attempts*, not concurrent
+  # connections (concurrency is bounded at nginx). The old 12/s, 48/min bucket
+  # was effectively shared by every user behind a carrier NAT, and reconnecting
+  # mobile clients can legitimately exceed 48/min. Reads are local now, so
+  # accepting a connection is cheap.
+  connection:
+    rateLimits:
+      - description: 30 connection attempts/sec
+        period: 1000
+        rate: 30
+      - description: 600 connection attempts/min
+        period: 60000
+        rate: 600
+    ipWhitelist:
+      - "::1"
+      - "10.10.10.1"
+      - "::ffff:10.10.10.1"
   # Per-IP raw-message budget.
   #
-  # The upstream default is 240/min, sized for a local database where a REQ
-  # costs ~1ms. Here every read fans out over the mesh and waits for the
-  # slowest provider (measured P1 ~183ms RTT, p50 ~200ms, p99 ~3.7s), holding
-  # a pooled connection for the whole round trip. A saturated worker's pool
-  # queues without bound (observed: 24/24 used with 26,994 acquires pending),
-  # each willing to wait the full 60s acquire timeout; that backlog, not the
-  # request rate alone, is what makes the relay unresponsive for minutes.
-  #
-  # Measured live client rates: typical 2-6 msg/min, heaviest legitimate
-  # 33.6/min. 60 keeps ~2x headroom over the heaviest real client and ~10x over
-  # typical, while cutting an abusive IP from 240 to 60.
+  # This was 60/min while every REQ was a mesh fan-out (p50 ~200ms, p99 ~3.7s)
+  # holding a pooled connection for the whole round trip. Reads now come from
+  # the same-host central Postgres and answer in ~1ms, so the upstream default
+  # is safe again. Measured legitimate peak was 33.6 msg/min; 240 leaves ~7x
+  # headroom. nginx still provides the hard per-IP connection cap.
   message:
     rateLimits:
-      - description: 60 raw messages/min
+      - description: 240 raw messages/min
         period: 60000
-        rate: 60
+        rate: 240
 
 # NIP-42 read protection for private DMs.
 #
@@ -122,6 +133,7 @@ moderation:
     selfPromoBoilerplate: { enabled: true, action: quarantine }
     linkFlood: { enabled: true, action: quarantine }
     hashtagStuffing: { enabled: true, action: quarantine }
+    bitcoinBlockFees: { enabled: true, action: quarantine }
   duplicateBurst:
     enabled: false
     action: quarantine

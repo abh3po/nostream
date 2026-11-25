@@ -240,10 +240,26 @@ export class SubscribeMessageHandler implements IMessageHandler, IAbortable {
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         logger('subscription %s aborted: %o', subscriptionId, error)
-        findEvents.destroy()
       } else {
-        logger('error streaming events: %o', error)
+        // A failed read must terminate the subscription explicitly. Otherwise
+        // the client waits forever: nostream's REQ path only sends EOSE on a
+        // successful stream, and a DB error used to be logged and dropped.
+        logger('error streaming events for subscription %s: %o', subscriptionId, error)
+        this.webSocket.emit(
+          WebSocketAdapterEvent.Message,
+          createClosedMessage(subscriptionId, 'error: unable to complete subscription'),
+        )
       }
+
+      // Destroy on every failure, not just AbortError. A DB error or a
+      // statement_timeout cancellation can otherwise leave the knex/pg stream
+      // paused, holding its pooled connection until the relay restarts.
+      try {
+        findEvents.destroy()
+      } catch (destroyError) {
+        logger('unable to destroy event stream for subscription %s: %o', subscriptionId, destroyError)
+      }
+
       throw error
     }
   }

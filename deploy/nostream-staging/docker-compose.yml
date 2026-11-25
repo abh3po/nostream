@@ -69,6 +69,13 @@ services:
       # Local queries are ~1ms; 5s is already an order of magnitude above the
       # normal path and still refuses to join a runaway queue.
       RR0_DB_ACQUIRE_CONNECTION_TIMEOUT: ${RR0_DB_ACQUIRE_CONNECTION_TIMEOUT:-5000}
+      # Each REQ holds its read connection until the stream ends. If a client
+      # stops consuming, PostgreSQL waits on ClientRead forever. Cap the read
+      # query at 5 minutes so it errors, releases the connection, and the relay
+      # answers the subscription with CLOSED instead of hanging silently.
+      RR0_DB_STATEMENT_TIMEOUT_MS: ${RR0_DB_STATEMENT_TIMEOUT_MS:-300000}
+      # Labels these connections in pg_stat_activity for diagnostics/watchdogs.
+      RR0_DB_APPLICATION_NAME: ${RR0_DB_APPLICATION_NAME:-nostream-read}
       REDIS_HOST: nostream-cache
       REDIS_PORT: "6379"
       REDIS_USER: ${REDIS_USER:-default}

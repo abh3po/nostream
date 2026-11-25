@@ -692,6 +692,11 @@ describe('SubscribeMessageHandler', () => {
 
       await expect(promise).to.eventually.be.rejectedWith(error)
       expect(closeSpy).to.have.been.called
+      expect(webSocketOnMessageStub).to.have.been.calledWithExactly([
+        'CLOSED',
+        subscriptionId,
+        'error: unable to complete subscription',
+      ])
     })
 
     it('destroys event stream if aborted', async () => {

@@ -51,8 +51,13 @@ const getMasterConfig = (): Knex.Config =>
       : 60000,
   }) as any
 
-const getReadReplicaConfigByIndex = (index: number): Knex.Config =>
-  ({
+const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 300000
+
+const getReadReplicaConfigByIndex = (index: number): Knex.Config => {
+  const statementTimeout = process.env[`RR${index}_DB_STATEMENT_TIMEOUT_MS`]
+  const applicationName = process.env[`RR${index}_DB_APPLICATION_NAME`] || `nostream-read-${index}`
+
+  return {
     tag: 'read-replica',
     client: 'pg',
     connection: {
@@ -61,6 +66,14 @@ const getReadReplicaConfigByIndex = (index: number): Knex.Config =>
       user: process.env[`RR${index}_DB_USER`],
       password: process.env[`RR${index}_DB_PASSWORD`],
       database: process.env[`RR${index}_DB_NAME`],
+      // Makes stale relay reads easy to identify in pg_stat_activity.
+      application_name: applicationName,
+      // A REQ holds its pooled connection for the life of the result stream.
+      // If the consumer stalls or disappears, PostgreSQL waits on ClientRead
+      // forever and that connection is never released. Cap the server-side
+      // query lifetime so a stuck read fails (and the handler sends CLOSED)
+      // instead of silently consuming the pool.
+      statement_timeout: statementTimeout ? Number(statementTimeout) : DEFAULT_READ_STATEMENT_TIMEOUT_MS,
     },
     pool: {
       min: process.env[`RR${index}_DB_MIN_POOL_SIZE`] ? Number(process.env[`RR${index}_DB_MIN_POOL_SIZE`]) : 0,
@@ -71,7 +84,8 @@ const getReadReplicaConfigByIndex = (index: number): Knex.Config =>
         ? Number(process.env[`RR${index}_DB_ACQUIRE_CONNECTION_TIMEOUT`])
         : 60000,
     },
-  }) as any
+  } as any
+}
 
 const getReadReplicaConfig = (): Knex.Config => {
   // Workers other than the pool-based `worker` type (maintenance, dvm,

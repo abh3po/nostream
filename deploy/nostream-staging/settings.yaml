@@ -55,6 +55,14 @@ network:
     - "::ffff:172.28.0.1"
 
 limits:
+  # One app connection multiplexes many interests through the local relay
+  # worker (mail inbox filters, metadata, notifications, feeds, chat). The
+  # upstream default of 10 rejects later REQs with "Too many subscriptions",
+  # which can drop the mail #p subscription entirely. Reads are local now, so
+  # the per-connection cap is no longer the scarce resource it once was.
+  client:
+    subscription:
+      maxSubscriptions: 30
   event:
     createdAt:
       maxPositiveDelta: 900

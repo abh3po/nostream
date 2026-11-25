@@ -52,7 +52,6 @@ const DEFAULT_TS_CONFIG = 'simple'
 const DEFAULT_MAX_SEARCH_QUERY_LENGTH = 256
 
 interface FilterConditionFlags {
-  isTagQuery: boolean
   isSearchQuery: boolean
 }
 
@@ -68,10 +67,16 @@ export class EventRepository implements IEventRepository {
     if (!Array.isArray(filters) || !filters.length) {
       throw new Error('Filters cannot be empty')
     }
+    const now = Math.floor(Date.now() / 1000)
+
     const queries = filters.map((currentFilter) => {
       const builder = this.readReplicaDbClient<DBEvent>('events')
 
-      const { isTagQuery, isSearchQuery } = this.applyFilterConditions(builder, currentFilter)
+      const { isSearchQuery } = this.applyFilterConditions(builder, currentFilter)
+      // Drop unservable rows in SQL, before the limit: filtered later in the
+      // stream they still used up limit slots, so 90 deleted/expired wraps
+      // hid a mailbox's newest 90 stored events behind the 500 default cap.
+      this.applyServableConditions(builder, now)
 
       if (isSearchQuery) {
         // NIP-50: sort by relevance (ts_rank) descending, then by event_id for stability
@@ -84,21 +89,14 @@ export class EventRepository implements IEventRepository {
           'events.*, ts_rank(to_tsvector(?::regconfig, event_content), plainto_tsquery(?::regconfig, ?)) AS search_rank',
           [tsConfig, tsConfig, searchQuery],
         )
-        // De-duplicate rows multiplied by the event_tags left join when search is combined with a generic tag filter
-        if (isTagQuery) {
-          builder.distinct(searchSelection)
-        } else {
-          builder.select(searchSelection)
-        }
+        builder.select(searchSelection)
         builder.limit(limit).orderBy('search_rank', 'DESC').orderBy('event_id', 'asc')
-      } else if (typeof currentFilter.limit === 'number') {
-        builder.limit(currentFilter.limit).orderBy('event_created_at', 'DESC').orderBy('event_id', 'asc')
       } else {
-        builder.limit(DEFAULT_FILTER_LIMIT).orderBy('event_created_at', 'asc').orderBy('event_id', 'asc')
-      }
-
-      if (isTagQuery && !isSearchQuery) {
-        builder.distinct('events.*')
+        // Newest first, with or without a client limit. Oldest-first under the
+        // default cap returned the OLDEST 500 matches, so once more than 500
+        // matched, the newest events were never served from storage at all.
+        const limit = typeof currentFilter.limit === 'number' ? currentFilter.limit : DEFAULT_FILTER_LIMIT
+        builder.limit(limit).orderBy('event_created_at', 'DESC').orderBy('event_id', 'asc')
       }
 
       return builder
@@ -124,24 +122,13 @@ export class EventRepository implements IEventRepository {
     const queries = filters.map((currentFilter) => {
       const builder = this.readReplicaDbClient<DBEvent>('events').select('events.event_id')
 
-      const { isTagQuery } = this.applyFilterConditions(builder, currentFilter)
+      this.applyFilterConditions(builder, currentFilter)
 
       if (typeof currentFilter.limit === 'number') {
         builder.limit(currentFilter.limit).orderBy('event_created_at', 'DESC').orderBy('event_id', 'asc')
       }
 
-      if (isTagQuery) {
-        builder.select('events.event_id')
-      }
-
-      builder.whereNull('events.deleted_at').andWhere((bd) => {
-        bd.whereNull('events.expires_at').orWhere('events.expires_at', '>', now)
-      })
-
-      // Moderation: do not count quarantined events, unless overturned.
-      builder.where((bd) => {
-        bd.whereNull('events.quarantined_at').orWhereNotNull('events.moderation_overturned_at')
-      })
+      this.applyServableConditions(builder, now)
 
       return builder
     })
@@ -154,6 +141,17 @@ export class EventRepository implements IEventRepository {
     const result = await this.readReplicaDbClient.from(query.as('matching_events')).countDistinct({ count: 'event_id' }).first()
 
     return Number(result?.count ?? 0)
+  }
+
+  /** Rows a REQ may serve: not deleted, not expired, not quarantined (unless overturned). */
+  private applyServableConditions(builder: any, now: number): void {
+    builder.whereNull('events.deleted_at').andWhere((bd) => {
+      bd.whereNull('events.expires_at').orWhere('events.expires_at', '>', now)
+    })
+
+    builder.where((bd) => {
+      bd.whereNull('events.quarantined_at').orWhereNotNull('events.moderation_overturned_at')
+    })
   }
 
   private applyFilterConditions(builder: any, currentFilter: SubscriptionFilter): FilterConditionFlags {
@@ -187,13 +185,9 @@ export class EventRepository implements IEventRepository {
       }
     }
 
-    const isTagQuery = this.applyGenericTagFilterConditions(builder, currentFilter)
+    this.applyGenericTagFilterConditions(builder, currentFilter)
 
-    if (isTagQuery) {
-      builder.leftJoin('event_tags', 'events.event_id', 'event_tags.event_id')
-    }
-
-    return { isTagQuery, isSearchQuery }
+    return { isSearchQuery }
   }
 
   /** Resolve the PostgreSQL text-search configuration name from settings. */
@@ -263,34 +257,42 @@ export class EventRepository implements IEventRepository {
     )
   }
 
-  private applyGenericTagFilterConditions(builder: any, currentFilter: SubscriptionFilter): boolean {
+  private applyGenericTagFilterConditions(builder: any, currentFilter: SubscriptionFilter): void {
     const tagFilters = Object.entries(currentFilter).filter(([filterName]) => isGenericTagQuery(filterName))
 
     tagFilters.forEach(([filterName, criteria]) => {
       this.applyGenericTagCriteria(builder, filterName, criteria as string[])
     })
-
-    return tagFilters.length > 0
   }
 
+  /**
+   * One EXISTS per tag letter. A single join on event_tags made a filter with
+   * two tag letters (e.g. #p + #k) demand one tag row be both, so it never
+   * matched; it also multiplied rows, which needed DISTINCT over events.*.
+   */
   private applyGenericTagCriteria(builder: any, filterName: string, criteria: string[]): void {
-    builder.andWhere((bd) => {
-      if (!criteria.length) {
-        bd.andWhereRaw('1 = 0')
+    if (!criteria.length) {
+      builder.andWhereRaw('1 = 0')
+      return
+    }
+
+    builder.whereExists((sub) => {
+      sub.select(this.readReplicaDbClient.raw('1')).from('event_tags').whereRaw('event_tags.event_id = events.event_id')
+      sub.andWhere((bd) => this.applyGenericTagValues(bd, filterName, criteria))
+    })
+  }
+
+  private applyGenericTagValues(bd: any, filterName: string, criteria: string[]): void {
+    criteria.forEach((criterion) => {
+      if (isGeohashPrefixCriterion(filterName, criterion)) {
+        bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value LIKE ?', [
+          filterName[1],
+          `${stripGeohashPrefixWildcard(criterion)}%`,
+        ])
         return
       }
 
-      criteria.forEach((criterion) => {
-        if (isGeohashPrefixCriterion(filterName, criterion)) {
-          bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value LIKE ?', [
-            filterName[1],
-            `${stripGeohashPrefixWildcard(criterion)}%`,
-          ])
-          return
-        }
-
-        bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value = ?', [filterName[1], criterion])
-      })
+      bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value = ?', [filterName[1], criterion])
     })
   }
 

@@ -677,6 +677,24 @@ describe('SubscribeMessageHandler', () => {
       expect(webSocketOnMessageStub).to.have.been.calledWithExactly(['EOSE', subscriptionId])
     })
 
+    it('aborts a stored read that outlives the one-minute cap', async () => {
+      isClientSubscribedToEventStub.returns(always(true))
+
+      const promise = (handler as any).fetchAndSend(subscriptionId, filters)
+      const rejection = promise.catch((error: Error) => error)
+
+      await clock.tickAsync(60000)
+      const error = await rejection
+
+      expect(error).to.be.instanceOf(Error)
+      expect(error.message).to.contain('stored read exceeded 60000ms')
+      expect(webSocketOnMessageStub).to.have.been.calledWithExactly([
+        'CLOSED',
+        subscriptionId,
+        'error: unable to complete subscription',
+      ])
+    })
+
     it('ends event stream if error occurs', async () => {
       const error = new Error('mistakes were made')
       isClientSubscribedToEventStub.returns(always(true))

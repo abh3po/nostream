@@ -76,6 +76,10 @@ services:
       RR0_DB_STATEMENT_TIMEOUT_MS: ${RR0_DB_STATEMENT_TIMEOUT_MS:-60000}
       # Labels these connections in pg_stat_activity for diagnostics/watchdogs.
       RR0_DB_APPLICATION_NAME: ${RR0_DB_APPLICATION_NAME:-nostream-read}
+      # Hard ceiling on one stored-REQ stream. Live subscriptions are not
+      # affected; this only stops a non-consuming REQ from holding a read
+      # connection indefinitely.
+      READ_STREAM_TIMEOUT_MS: ${READ_STREAM_TIMEOUT_MS:-60000}
       REDIS_HOST: nostream-cache
       REDIS_PORT: "6379"
       REDIS_USER: ${REDIS_USER:-default}

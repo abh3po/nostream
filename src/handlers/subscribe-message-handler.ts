@@ -27,6 +27,17 @@ import { WebSocketAdapterEvent } from '../constants/adapter'
 
 const logger = createLogger('subscribe-message-handler')
 
+/** Hard ceiling on one stored-read stream. A live subscription lasts as long as
+ *  the client wants, but the one-shot REQ stream must not hold a database
+ *  connection indefinitely if the client stops consuming it. Overridable for
+ *  tests and unusually large exports. */
+const DEFAULT_READ_STREAM_TIMEOUT_MS = 60000
+
+const getReadStreamTimeoutMs = (): number => {
+  const configured = Number(process.env.READ_STREAM_TIMEOUT_MS)
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_READ_STREAM_TIMEOUT_MS
+}
+
 export class SubscribeMessageHandler implements IMessageHandler, IAbortable {
   private readonly abortController: AbortController
 
@@ -224,6 +235,17 @@ export class SubscribeMessageHandler implements IMessageHandler, IAbortable {
 
     const abortableFindEvents = addAbortSignal(this.abortController.signal, findEvents)
 
+    const timeoutMs = getReadStreamTimeoutMs()
+    const streamTimeout = setTimeout(() => {
+      if (findEvents.destroyed) {
+        return
+      }
+      logger('subscription %s exceeded %dms; aborting stored read', subscriptionId, timeoutMs)
+      // destroy() closes the server-side portal via the knex patch, so the
+      // pooled connection is released even if the client stopped reading.
+      findEvents.destroy(new Error(`stored read exceeded ${timeoutMs}ms`))
+    }, timeoutMs)
+
     try {
       await pipeline(
         abortableFindEvents,
@@ -261,6 +283,8 @@ export class SubscribeMessageHandler implements IMessageHandler, IAbortable {
       }
 
       throw error
+    } finally {
+      clearTimeout(streamTimeout)
     }
   }
 

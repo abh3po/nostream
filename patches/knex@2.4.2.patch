@@ -1,11 +1,12 @@
 --- a/lib/dialects/postgres/index.js
 +++ b/lib/dialects/postgres/index.js
-@@ -193,17 +193,38 @@
+@@ -193,17 +193,54 @@
      const sql = obj.sql;
  
      return new Promise(function (resolver, rejecter) {
 +      // Settle at most once: 'end', 'close' and 'error' can all arrive.
 +      let settled = false;
++      let ended = false;
 +      const settle = function () {
 +        if (settled) return;
 +        settled = true;
@@ -36,8 +37,23 @@
 -      stream.on('end', resolver);
 +      // 'end' is propagated by .pipe by default. 'close' covers a destroyed
 +      // stream (destroy() emits 'close', not 'end'), which is the abort path.
-+      stream.on('end', settle);
-+      stream.on('close', settle);
++      stream.on('end', function () {
++        ended = true;
++        settle();
++      });
++      stream.on('close', function () {
++        // Destroying the query stream closes the server-side portal. If it is
++        // left open, PostgreSQL waits on ClientRead forever and the pooled
++        // connection is poisoned even after knex returns it to the pool.
++        if (!ended) {
++          try {
++            queryStream.destroy();
++          } catch (_) {
++            // The stream may already be gone; settling is what matters.
++          }
++        }
++        settle();
++      });
        queryStream.pipe(stream);
      });
    }

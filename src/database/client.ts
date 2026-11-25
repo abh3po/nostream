@@ -68,11 +68,12 @@ const getReadReplicaConfigByIndex = (index: number): Knex.Config => {
       database: process.env[`RR${index}_DB_NAME`],
       // Makes stale relay reads easy to identify in pg_stat_activity.
       application_name: applicationName,
-      // A REQ holds its pooled connection for the life of the result stream.
-      // If the consumer stalls or disappears, PostgreSQL waits on ClientRead
-      // forever and that connection is never released. Cap the server-side
-      // query lifetime so a stuck read fails (and the handler sends CLOSED)
-      // instead of silently consuming the pool.
+      // Cap long-running query execution. This does NOT cover a backend
+      // blocked in ClientRead: PostgreSQL does not check statement_timeout
+      // while it is waiting for a client to consume result rows. Aborted
+      // streams are therefore closed at the portal level in
+      // patches/knex@2.4.2.patch, and the stale-read watchdog is the final
+      // backstop. This timeout still bounds genuinely long CPU/IO work.
       statement_timeout: statementTimeout ? Number(statementTimeout) : DEFAULT_READ_STATEMENT_TIMEOUT_MS,
     },
     pool: {

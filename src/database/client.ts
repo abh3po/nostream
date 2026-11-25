@@ -51,7 +51,7 @@ const getMasterConfig = (): Knex.Config =>
       : 60000,
   }) as any
 
-const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 300000
+const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 60000
 
 const getReadReplicaConfigByIndex = (index: number): Knex.Config => {
   const statementTimeout = process.env[`RR${index}_DB_STATEMENT_TIMEOUT_MS`]

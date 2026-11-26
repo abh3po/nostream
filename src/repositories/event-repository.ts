@@ -266,9 +266,16 @@ export class EventRepository implements IEventRepository {
   }
 
   /**
-   * One EXISTS per tag letter. A single join on event_tags made a filter with
-   * two tag letters (e.g. #p + #k) demand one tag row be both, so it never
-   * matched; it also multiplied rows, which needed DISTINCT over events.*.
+   * One `event_id = ANY(ARRAY(tag subquery))` per tag letter.
+   *
+   * A single join on event_tags made a filter with two tag letters (e.g. #p +
+   * #k) demand one tag row be both, so it never matched. Its DISTINCT also,
+   * usefully, forced Postgres to collect the tag matches first. A plain
+   * EXISTS/IN under ORDER BY created_at DESC LIMIT lets the planner instead walk
+   * every event newest-first and probe tags row by row, which hit the 60s
+   * statement timeout whenever it misjudged how common the tags were.
+   * ARRAY(subquery) is evaluated once as an InitPlan, so the plan is always
+   * bounded by the number of tag matches (rare tags: <1ms; 25k matches: ~1s).
    */
   private applyGenericTagCriteria(builder: any, filterName: string, criteria: string[]): void {
     if (!criteria.length) {
@@ -276,24 +283,25 @@ export class EventRepository implements IEventRepository {
       return
     }
 
-    builder.whereExists((sub) => {
-      sub.select(this.readReplicaDbClient.raw('1')).from('event_tags').whereRaw('event_tags.event_id = events.event_id')
-      sub.andWhere((bd) => this.applyGenericTagValues(bd, filterName, criteria))
-    })
-  }
+    const tagName = filterName[1]
+    const exact = criteria.filter((criterion) => !isGeohashPrefixCriterion(filterName, criterion))
+    const prefixes = criteria
+      .filter((criterion) => isGeohashPrefixCriterion(filterName, criterion))
+      .map((criterion) => `${stripGeohashPrefixWildcard(criterion)}%`)
 
-  private applyGenericTagValues(bd: any, filterName: string, criteria: string[]): void {
-    criteria.forEach((criterion) => {
-      if (isGeohashPrefixCriterion(filterName, criterion)) {
-        bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value LIKE ?', [
-          filterName[1],
-          `${stripGeohashPrefixWildcard(criterion)}%`,
-        ])
-        return
-      }
+    const matches = this.readReplicaDbClient('event_tags')
+      .select('event_tags.event_id')
+      .where('event_tags.tag_name', tagName)
+      .andWhere((bd) => {
+        if (exact.length) {
+          bd.orWhereIn('event_tags.tag_value', exact)
+        }
+        prefixes.forEach((prefix) => {
+          bd.orWhere('event_tags.tag_value', 'like', prefix)
+        })
+      })
 
-      bd.orWhereRaw('event_tags.tag_name = ? AND event_tags.tag_value = ?', [filterName[1], criterion])
-    })
+    builder.whereRaw('"events"."event_id" = ANY(ARRAY(?))', [matches])
   }
 
   public async create(event: Event): Promise<number> {
